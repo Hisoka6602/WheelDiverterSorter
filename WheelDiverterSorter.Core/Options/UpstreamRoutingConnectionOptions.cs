@@ -6,12 +6,10 @@ using System.Collections.Generic;
 using WheelDiverterSorter.Core.Enums;
 
 namespace WheelDiverterSorter.Core.Options {
-
     /// <summary>
     /// 上游路由连接参数
     /// </summary>
-    public sealed class UpstreamRoutingConnectionOptions {
-
+    public sealed record class UpstreamRoutingConnectionOptions {
         /// <summary>
         /// 主机地址（TCP/串口名等）
         /// </summary>

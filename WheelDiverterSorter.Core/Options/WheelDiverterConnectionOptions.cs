@@ -11,6 +11,10 @@ namespace WheelDiverterSorter.Core.Options {
     /// </summary>
     public sealed record class WheelDiverterConnectionOptions {
         /// <summary>
+        /// 摆轮编号（该位置无摆轮时为 null）
+        /// </summary>
+        public int DiverterId { get; init; }
+        /// <summary>
         /// 主机地址（TCP/串口名等）
         /// </summary>
         public required string Endpoint { get; init; } = string.Empty;

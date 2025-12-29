@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 
 namespace WheelDiverterSorter.Core.Options {
-    public class LogCleanupSettings {
+    public record class LogCleanupSettings {
         public bool Enabled { get; set; } = true;
         public int RetentionDays { get; set; } = 2;
         public int CheckIntervalHours { get; set; } = 1;

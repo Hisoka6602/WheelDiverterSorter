@@ -15,9 +15,9 @@ namespace WheelDiverterSorter.Core {
     public interface IWheelDiverter : IDisposable {
 
         /// <summary>
-        /// 位置（例如拓扑中的 PositionIndex 或设备位置编号）
+        /// 摆轮Id
         /// </summary>
-        int PositionIndex { get; }
+        int DiverterId { get; }
 
         /// <summary>
         /// 当前状态

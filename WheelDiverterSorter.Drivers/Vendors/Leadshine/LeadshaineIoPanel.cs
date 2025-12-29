@@ -22,7 +22,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
         private CancellationTokenSource? _monitoringCts;
         private Task? _monitoringTask;
 
-        private IoPanelButtonOptions[] _options = Array.Empty<IoPanelButtonOptions>();
+        private readonly IoPanelButtonOptions[] _options;
 
         // point -> option（避免每次 tick 反复遍历 options）
         private readonly Dictionary<int, IoPanelButtonOptions> _optionByPoint = new();
@@ -47,7 +47,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
 
             _options = ioPanelButtonOptionsInfos is { Count: > 0 }
                 ? CopyOptions(ioPanelButtonOptionsInfos)
-                : Array.Empty<IoPanelButtonOptions>();
+                : [];
 
             RebuildCaches(_options);
         }
@@ -143,9 +143,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
                     BuildSnapshotStates();
 
                     // 处理每个按钮的边沿
-                    for (var i = 0; i < _options.Length; i++) {
-                        var option = _options[i];
-
+                    foreach (var option in _options) {
                         if (!_snapshotStates.TryGetValue(option.Point, out var current)) {
                             continue;
                         }
@@ -238,8 +236,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
 
         private bool IsAnyEmergencyStopActive() {
             // 任一急停电平等于各自 TriggerState，则认为急停激活
-            for (var i = 0; i < _options.Length; i++) {
-                var opt = _options[i];
+            foreach (var opt in _options) {
                 if (opt.ButtonType != IoPanelButtonType.EmergencyStop) {
                     continue;
                 }
@@ -261,8 +258,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
             // 全部急停都满足 current != TriggerState，才算“全部已释放”
             var hasAnyEStop = false;
 
-            for (var i = 0; i < _options.Length; i++) {
-                var opt = _options[i];
+            foreach (var opt in _options) {
                 if (opt.ButtonType != IoPanelButtonType.EmergencyStop) {
                     continue;
                 }
@@ -365,7 +361,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
 
         private void RaiseFaulted(string message, Exception? exception) {
             try {
-                Faulted?.Invoke(this, new IoPanelFaultedEventArgs(message, exception, DateTimeOffset.UtcNow));
+                Faulted?.Invoke(this, new IoPanelFaultedEventArgs(message, exception, DateTimeOffset.Now));
             }
             catch {
                 // 事件回调异常隔离
@@ -377,8 +373,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
             _runtimeByPoint.Clear();
             _snapshotStates.Clear();
 
-            for (var i = 0; i < options.Length; i++) {
-                var opt = options[i];
+            foreach (var opt in options) {
                 _optionByPoint[opt.Point] = opt;
                 _runtimeByPoint[opt.Point] = new ButtonRuntimeState();
             }
@@ -387,7 +382,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
         private static bool PassDebounce(ref long lastTicksField, int debounceWindowMs) {
             var windowMs = debounceWindowMs <= 0 ? 30 : debounceWindowMs;
 
-            var nowTicks = DateTimeOffset.UtcNow.UtcTicks;
+            var nowTicks = DateTimeOffset.Now.Ticks;
             var lastTicks = Interlocked.Read(ref lastTicksField);
 
             if (lastTicks != 0) {
@@ -402,14 +397,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
         }
 
         private static int GetMinPollIntervalMs(IoPanelButtonOptions[] options) {
-            var min = int.MaxValue;
-
-            for (var i = 0; i < options.Length; i++) {
-                var v = options[i].PollIntervalMs <= 0 ? 5 : options[i].PollIntervalMs;
-                if (v < min) {
-                    min = v;
-                }
-            }
+            var min = options.Select(t => t.PollIntervalMs <= 0 ? 5 : t.PollIntervalMs).Prepend(int.MaxValue).Min();
 
             return min == int.MaxValue ? 5 : min;
         }
@@ -423,7 +411,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
                     Name = option.ButtonName,
                     DebounceWindowMs = option.DebounceWindowMs
                 },
-                OccurredAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                OccurredAtMs = DateTimeOffset.Now.ToUnixTimeMilliseconds()
             };
         }
 

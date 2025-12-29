@@ -31,7 +31,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
             _ = DisconnectAsync();
         }
 
-        public int PositionIndex { get; private set; }
+        public int DiverterId { get; private set; }
         public WheelDiverterStatus Status { get; private set; }
         public WheelDiverterConnectionOptions ConnectionOptions { get; private set; }
 
@@ -46,8 +46,11 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
         public event EventHandler<WheelDiverterFaultedEventArgs>? Faulted;
 
         public ShuDiNiaoWheelDiverter(
-            ILogger<ShuDiNiaoWheelDiverter> logger) {
+            ILogger<ShuDiNiaoWheelDiverter> logger,
+            WheelDiverterConnectionOptions connectionOptions) {
             _logger = logger;
+            ConnectionOptions = connectionOptions;
+            DiverterId = connectionOptions.DiverterId;
         }
 
         public async ValueTask<bool> ConnectAsync(WheelDiverterConnectionOptions connectionOptions, CancellationToken cancellationToken = default) {
@@ -106,7 +109,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
             // 构造命令帧
             var frame = ShuDiNiaoProtocol.BuildCommandFrame(0x51, ShuDiNiaoControlCommand.Run);
 
-            _logger.LogInformation("摆轮 {DiverterId} 运行命令发送成功", PositionIndex);
+            _logger.LogInformation("摆轮 {DiverterId} 运行命令发送成功", DiverterId);
             switch (ConnectionOptions.Mode) {
                 case TcpConnectionMode.Client:
                     await SendViaClientAsync(frame, cancellationToken);
@@ -121,7 +124,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
         public async ValueTask StopAsync(CancellationToken cancellationToken = default) {
             var frame = ShuDiNiaoProtocol.BuildCommandFrame(0x51, ShuDiNiaoControlCommand.Stop);
 
-            _logger.LogInformation("摆轮 {DiverterId} 停止命令发送成功", PositionIndex);
+            _logger.LogInformation("摆轮 {DiverterId} 停止命令发送成功", DiverterId);
             switch (ConnectionOptions.Mode) {
                 case TcpConnectionMode.Client:
                     await SendViaClientAsync(frame, cancellationToken);
@@ -136,7 +139,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
         public async ValueTask TurnLeftAsync(CancellationToken cancellationToken = default) {
             var frame = ShuDiNiaoProtocol.BuildCommandFrame(0x51, ShuDiNiaoControlCommand.TurnLeft);
 
-            _logger.LogInformation("摆轮 {DiverterId} 左转命令发送成功", PositionIndex);
+            _logger.LogInformation("摆轮 {DiverterId} 左转命令发送成功", DiverterId);
             switch (ConnectionOptions.Mode) {
                 case TcpConnectionMode.Client:
                     await SendViaClientAsync(frame, cancellationToken);
@@ -151,7 +154,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
         public async ValueTask TurnRightAsync(CancellationToken cancellationToken = default) {
             var frame = ShuDiNiaoProtocol.BuildCommandFrame(0x51, ShuDiNiaoControlCommand.TurnRight);
 
-            _logger.LogInformation("摆轮 {DiverterId} 右转命令发送成功", PositionIndex);
+            _logger.LogInformation("摆轮 {DiverterId} 右转命令发送成功", DiverterId);
             switch (ConnectionOptions.Mode) {
                 case TcpConnectionMode.Client:
                     await SendViaClientAsync(frame, cancellationToken);
@@ -166,7 +169,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
         public async ValueTask StraightThroughAsync(CancellationToken cancellationToken = default) {
             var frame = ShuDiNiaoProtocol.BuildCommandFrame(0x51, ShuDiNiaoControlCommand.ReturnCenter);
 
-            _logger.LogInformation("摆轮 {DiverterId} 直通命令发送成功", PositionIndex);
+            _logger.LogInformation("摆轮 {DiverterId} 直通命令发送成功", DiverterId);
             switch (ConnectionOptions.Mode) {
                 case TcpConnectionMode.Client:
                     await SendViaClientAsync(frame, cancellationToken);
@@ -188,7 +191,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
             _logger.LogInformation(
                 "[摆轮通信-发送] 摆轮 {DiverterId} 发送速度设置 | 节点:{DeviceAddress:X2} | 速度={Speed}m/min | 摆动后速度={SpeedAfterSwing}m/min | 速度帧={Frame}",
                 ConnectionOptions.Endpoint,
-                PositionIndex,
+                DiverterId,
                 speedMPerMin,
                 speedAfterSwingMPerMin,
                 lastCommandSent);
@@ -354,7 +357,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
                 });
                 _logger.LogDebug(
                     "[摆轮通信-接收] 摆轮 {DiverterId} 收到未识别的帧 | 帧={Frame}",
-                    PositionIndex,
+                    DiverterId,
                     ShuDiNiaoProtocol.FormatBytes(payload.Span));
             }
             catch (Exception ex) {
