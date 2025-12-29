@@ -1,0 +1,81 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36603.0 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelDiverterSorter", "WheelDiverterSorter\WheelDiverterSorter.csproj", "{D9C99B2D-DE84-4E83-97FD-F5E087E9C512}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Core", "Core", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Drivers", "Drivers", "{925095BD-352A-4656-A7C4-F28908B90C9D}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Execution", "Execution", "{AC965F76-7442-4FDC-A5BA-58028F2C5FB5}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Host", "Host", "{A866AF48-B3AA-412A-801B-41F82FE22031}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Infrastructure", "Infrastructure", "{EE211EAD-B09D-4F3D-BC37-57CCF351C176}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Ingress", "Ingress", "{0F759145-5449-465D-B4CC-9CDB08B3C628}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelDiverterSorter.Core", "WheelDiverterSorter.Core\WheelDiverterSorter.Core.csproj", "{FB9762AA-C71E-43F4-B290-5A0BCA734B01}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelDiverterSorter.Drivers", "WheelDiverterSorter.Drivers\WheelDiverterSorter.Drivers.csproj", "{06F060BA-6542-430E-B316-EE039D545F30}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelDiverterSorter.Execution", "WheelDiverterSorter.Execution\WheelDiverterSorter.Execution.csproj", "{EAA748AB-7054-4FF5-8BCF-75725FC2D87C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelDiverterSorter.Infrastructure", "WheelDiverterSorter.Infrastructure\WheelDiverterSorter.Infrastructure.csproj", "{DCCC671B-3E39-4BD6-B38F-4BAE52A9A727}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelDiverterSorter.Ingress", "WheelDiverterSorter.Ingress\WheelDiverterSorter.Ingress.csproj", "{17880D27-CDB5-48B4-B0C6-B2FDE5E60B77}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WheelDiverterSorter.Host", "WheelDiverterSorter.Host\WheelDiverterSorter.Host.csproj", "{AB2CD6D3-2182-489D-8A8C-68B20CAEA2D7}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D9C99B2D-DE84-4E83-97FD-F5E087E9C512}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D9C99B2D-DE84-4E83-97FD-F5E087E9C512}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D9C99B2D-DE84-4E83-97FD-F5E087E9C512}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D9C99B2D-DE84-4E83-97FD-F5E087E9C512}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FB9762AA-C71E-43F4-B290-5A0BCA734B01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FB9762AA-C71E-43F4-B290-5A0BCA734B01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FB9762AA-C71E-43F4-B290-5A0BCA734B01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FB9762AA-C71E-43F4-B290-5A0BCA734B01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{06F060BA-6542-430E-B316-EE039D545F30}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{06F060BA-6542-430E-B316-EE039D545F30}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{06F060BA-6542-430E-B316-EE039D545F30}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{06F060BA-6542-430E-B316-EE039D545F30}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EAA748AB-7054-4FF5-8BCF-75725FC2D87C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EAA748AB-7054-4FF5-8BCF-75725FC2D87C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EAA748AB-7054-4FF5-8BCF-75725FC2D87C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EAA748AB-7054-4FF5-8BCF-75725FC2D87C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DCCC671B-3E39-4BD6-B38F-4BAE52A9A727}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DCCC671B-3E39-4BD6-B38F-4BAE52A9A727}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DCCC671B-3E39-4BD6-B38F-4BAE52A9A727}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DCCC671B-3E39-4BD6-B38F-4BAE52A9A727}.Release|Any CPU.Build.0 = Release|Any CPU
+		{17880D27-CDB5-48B4-B0C6-B2FDE5E60B77}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{17880D27-CDB5-48B4-B0C6-B2FDE5E60B77}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{17880D27-CDB5-48B4-B0C6-B2FDE5E60B77}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{17880D27-CDB5-48B4-B0C6-B2FDE5E60B77}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AB2CD6D3-2182-489D-8A8C-68B20CAEA2D7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AB2CD6D3-2182-489D-8A8C-68B20CAEA2D7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AB2CD6D3-2182-489D-8A8C-68B20CAEA2D7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AB2CD6D3-2182-489D-8A8C-68B20CAEA2D7}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{FB9762AA-C71E-43F4-B290-5A0BCA734B01} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{06F060BA-6542-430E-B316-EE039D545F30} = {925095BD-352A-4656-A7C4-F28908B90C9D}
+		{EAA748AB-7054-4FF5-8BCF-75725FC2D87C} = {AC965F76-7442-4FDC-A5BA-58028F2C5FB5}
+		{DCCC671B-3E39-4BD6-B38F-4BAE52A9A727} = {EE211EAD-B09D-4F3D-BC37-57CCF351C176}
+		{17880D27-CDB5-48B4-B0C6-B2FDE5E60B77} = {0F759145-5449-465D-B4CC-9CDB08B3C628}
+		{AB2CD6D3-2182-489D-8A8C-68B20CAEA2D7} = {A866AF48-B3AA-412A-801B-41F82FE22031}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {26490B40-E5D1-4266-AA3F-FE6361649E21}
+	EndGlobalSection
+EndGlobal
