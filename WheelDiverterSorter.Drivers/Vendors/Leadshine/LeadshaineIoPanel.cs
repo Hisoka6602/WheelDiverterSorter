@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using WheelDiverterSorter.Core;
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using WheelDiverterSorter.Core.Enums;
 using WheelDiverterSorter.Core.Events;
 using WheelDiverterSorter.Core.Models;
@@ -39,15 +40,13 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
         public LeadshaineIoPanel(
             IEmcController emcController,
             ISystemStateManager systemStateManager,
-            List<IoPanelButtonOptions> ioPanelButtonOptionsInfos,
+            IOptions<List<IoPanelButtonOptions>> ioPanelButtonOptionsInfos,
             ILogger<LeadshaineIoPanel> logger) {
             _emcController = emcController;
             _systemStateManager = systemStateManager;
             _logger = logger;
 
-            _options = ioPanelButtonOptionsInfos is { Count: > 0 }
-                ? CopyOptions(ioPanelButtonOptionsInfos)
-                : [];
+            _options = ioPanelButtonOptionsInfos.Value.ToArray();
 
             RebuildCaches(_options);
         }
@@ -420,15 +419,6 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
 
             return new IoPanelButtonReleasedEventArgs(option.Point, option.ButtonType,
                 option.ButtonName, DateTimeOffset.Now);
-        }
-
-        private static IoPanelButtonOptions[] CopyOptions(IReadOnlyList<IoPanelButtonOptions> list) {
-            var arr = new IoPanelButtonOptions[list.Count];
-            for (var i = 0; i < list.Count; i++) {
-                arr[i] = list[i];
-            }
-
-            return arr;
         }
 
         private struct ButtonRuntimeState {

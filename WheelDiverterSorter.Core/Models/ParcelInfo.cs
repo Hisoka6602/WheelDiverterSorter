@@ -24,5 +24,10 @@ namespace WheelDiverterSorter.Core.Models {
         /// 实际落格格口Id（未落格时为 null）
         /// </summary>
         public long? ActualChuteId { get; private set; }
+
+        //包裹条码
+        //包裹上一站Id
+        //包裹本站Id
+        //包裹从上一站到本站的耗时
     }
 }

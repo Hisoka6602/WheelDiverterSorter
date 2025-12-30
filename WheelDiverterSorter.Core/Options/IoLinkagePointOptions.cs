@@ -5,11 +5,11 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using WheelDiverterSorter.Core.Enums;
 
-namespace WheelDiverterSorter.Core.Models {
+namespace WheelDiverterSorter.Core.Options {
     /// <summary>
     /// IO 联动点位信息
     /// </summary>
-    public sealed record class IoLinkagePointInfo {
+    public sealed record class IoLinkagePointOptions {
         /// <summary>
         /// 点位编号
         /// </summary>

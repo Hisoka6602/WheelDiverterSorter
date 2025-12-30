@@ -10,5 +10,6 @@ namespace WheelDiverterSorter.Core {
     /// 编排接口
     /// </summary>
     public interface ISortingOrchestrator : IDisposable {
+        //
     }
 }

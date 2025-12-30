@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using WheelDiverterSorter.Core;
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using WheelDiverterSorter.Core.Enums;
 using WheelDiverterSorter.Core.Events;
 using WheelDiverterSorter.Core.Models;
@@ -48,10 +49,10 @@ namespace WheelDiverterSorter.Ingress {
         public event EventHandler<SensorFaultedEventArgs>? Faulted;
 
         public DefaultSensor(
-            List<SensorOptions> optionsInfos,
+            IOptions<List<SensorOptions>> optionsInfos,
             ILogger<DefaultSensor> logger,
             IEmcController emcController) {
-            _optionsInfos = optionsInfos ?? [];
+            _optionsInfos = optionsInfos.Value ?? [];
             _logger = logger;
             _emcController = emcController;
 
