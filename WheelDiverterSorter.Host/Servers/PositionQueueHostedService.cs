@@ -12,7 +12,7 @@ namespace WheelDiverterSorter.Host.Servers {
     public class PositionQueueHostedService : BackgroundService {
 
         protected override Task ExecuteAsync(CancellationToken stoppingToken) {
-            return null;
+            return Task.CompletedTask;
         }
     }
 }

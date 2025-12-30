@@ -228,8 +228,9 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
                 .ToArray();
 
             // 发布新快照：外部读永远拿到一致数组
-            var monitoredIoPoints = _monitoredIoPoints;
-            Volatile.Write(ref monitoredIoPoints, snapshot);
+            _monitoredIoPoints = snapshot;
+            //var monitoredIoPoints = _monitoredIoPoints;
+            Volatile.Write(ref _monitoredIoPoints, snapshot);
 
             _logger.LogInformation("已更新监控IO点集合，数量: {Count}", snapshot.Length);
             return ValueTask.CompletedTask;
@@ -345,7 +346,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
                             var current = unchecked((uint)(int)p.State);
 
                             if (raw == current) {
-                                return;
+                                continue;
                             }
 
                             // 明确用采样值决定新状态，避免“翻转”带来的漂移风险

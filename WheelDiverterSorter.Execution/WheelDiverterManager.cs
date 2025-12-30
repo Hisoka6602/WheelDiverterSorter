@@ -9,6 +9,7 @@ using WheelDiverterSorter.Core.Manager;
 using WheelDiverterSorter.Core.Options;
 
 namespace WheelDiverterSorter.Execution {
+
     public class WheelDiverterManager : IWheelDiverterManager {
         private readonly ILogger<WheelDiverterManager> _logger;
 

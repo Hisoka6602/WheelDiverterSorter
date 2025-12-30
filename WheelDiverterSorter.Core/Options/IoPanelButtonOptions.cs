@@ -16,7 +16,10 @@ namespace WheelDiverterSorter.Core.Options {
         /// 按钮类型
         /// </summary>
         public required IoPanelButtonType ButtonType { get; init; }
-
+        /// <summary>
+        /// 点位类型
+        /// </summary>
+        public required IoPointType Type { get; init; }
         /// <summary>
         /// 按钮名称
         /// </summary>
