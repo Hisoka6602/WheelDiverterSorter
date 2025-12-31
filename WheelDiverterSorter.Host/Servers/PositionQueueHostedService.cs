@@ -309,27 +309,28 @@ namespace WheelDiverterSorter.Host.Servers {
                     var prevStationId = info.CurrentStationId;
                     var prevArrivedAt = info.CurrentStationArrivedTime;
                     var actualTransitMs = 0;
-
-                    if (prevStationId != 0 && prevArrivedAt != default) {
+                    int? distanceMm = null;
+                    if (prevStationId >= 0 && prevArrivedAt != default) {
                         // 同源时间：prevArrivedAt 也是由 FromUnixTimeMilliseconds(...).DateTime 写入
-                        var delta = (long)(occurredAt.DateTime - prevArrivedAt).TotalMilliseconds;
+
+                        /*var delta = (long)(occurredAt.DateTime - prevArrivedAt).TotalMilliseconds;
                         if (delta > 0) {
                             actualTransitMs = delta > int.MaxValue ? int.MaxValue : (int)delta;
-                        }
+                        }*/
+
+                        distanceMm = (int?)occurredAt.ToLocalTime().DateTime.Subtract(prevArrivedAt).TotalMilliseconds;
                     }
 
-                    int? distanceMm = null;
-                    if (prevStationId != 0 && prevStationId <= int.MaxValue) {
+                    /*if (prevStationId is >= 0 and <= int.MaxValue) {
                         var prevIndex = (int)prevStationId;
                         if (_positionByIndex.TryGetValue(prevIndex, out var prevPos) &&
                             _segmentById.TryGetValue(prevPos.SegmentId, out var prevSeg)) {
                             distanceMm = (int?)prevSeg.LengthMm;
                         }
-                    }
+                    }*/
 
-                    if (prevStationId != 0) {
-                        Log.TransitStats(_logger, info.ParcelId, prevStationId, pos.PositionIndex, actualTransitMs, distanceMm, occurredMs);
-                    }
+                    //两站统计
+                    Log.TransitStats(_logger, info.ParcelId, prevStationId, pos.PositionIndex, actualTransitMs, distanceMm, occurredMs);
 
                     // 再更新到站（内部会前移上一站信息并计算 TransitTimeMs）
                     info.ArriveAtStation(pos.PositionIndex, occurredAt.DateTime);

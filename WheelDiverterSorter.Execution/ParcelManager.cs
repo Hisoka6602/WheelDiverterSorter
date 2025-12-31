@@ -89,7 +89,7 @@ namespace WheelDiverterSorter.Execution {
                     ParcelManagerLog.CreateDuplicate(_logger, parcel.ParcelId);
                     return new ValueTask<bool>(false);
                 }
-                var createdAt = DateTimeOffset.UtcNow;
+                var createdAt = DateTimeOffset.Now;
                 ParcelManagerLog.Created(_logger, parcel.ParcelId, parcel.BarCode, createdAt);
                 RaiseSafe(ParcelCreated, new ParcelCreatedEventArgs {
                     ParcelId = parcel.ParcelId,
@@ -201,7 +201,7 @@ namespace WheelDiverterSorter.Execution {
                     return new ValueTask<bool>(false);
                 }
 
-                var removedAt = DateTimeOffset.UtcNow;
+                var removedAt = DateTimeOffset.Now;
                 ParcelManagerLog.Removed(_logger, parcelId, reason, removedAt);
 
                 RaiseSafe(ParcelRemoved, new ParcelRemovedEventArgs {
@@ -227,7 +227,7 @@ namespace WheelDiverterSorter.Execution {
                 var countBefore = _parcels.Count;
                 _parcels.Clear();
 
-                ParcelManagerLog.Cleared(_logger, reason, countBefore, DateTimeOffset.UtcNow);
+                ParcelManagerLog.Cleared(_logger, reason, countBefore, DateTimeOffset.Now);
             }
             finally {
                 Volatile.Write(ref _isClearing, 0);
@@ -257,7 +257,7 @@ namespace WheelDiverterSorter.Execution {
                 RaiseSafe(Faulted, new ParcelManagerFaultedEventArgs {
                     Message = message,
                     Exception = exception,
-                    OccurredAt = DateTimeOffset.UtcNow
+                    OccurredAt = DateTimeOffset.Now
                 });
             }
             catch {

@@ -56,7 +56,7 @@ namespace WheelDiverterSorter.Core.Models {
         /// <summary>
         /// 包裹本站Id（0 表示未知/未设置）
         /// </summary>
-        public long CurrentStationId { get; private set; }
+        public long CurrentStationId { get; private set; } = 0;
 
         /// <summary>
         /// 包裹从上一站到本站的耗时（毫秒，0 表示未知/未设置）
@@ -71,7 +71,7 @@ namespace WheelDiverterSorter.Core.Models {
         /// <summary>
         /// 本站到达时间（默认值表示未知/未设置）
         /// </summary>
-        public DateTime CurrentStationArrivedTime { get; private set; }
+        public DateTime CurrentStationArrivedTime { get; private set; } = DateTime.Now;
 
         /// <summary>
         /// 落格时间（默认值表示未落格/未设置）
