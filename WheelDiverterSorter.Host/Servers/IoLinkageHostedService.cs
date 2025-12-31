@@ -172,7 +172,6 @@ namespace WheelDiverterSorter.Host.Servers {
 
                 _runCts = new CancellationTokenSource();
                 _plans.Clear();
-                return;
             }
 
             var now = DateTime.Now;

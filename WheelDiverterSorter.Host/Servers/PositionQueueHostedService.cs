@@ -21,9 +21,9 @@ namespace WheelDiverterSorter.Host.Servers {
 
     public sealed class PositionQueueHostedService : BackgroundService {
         private readonly ILogger<PositionQueueHostedService> _logger;
-        private readonly IOptions<IReadOnlyList<ConveyorSegmentOptions>> _conveyorSegmentOptions;
-        private readonly IOptions<IReadOnlyList<PositionOptions>> _positionOptions;
-        private readonly IOptions<IReadOnlyList<SensorOptions>> _sensorOptions;
+        private readonly IOptions<List<ConveyorSegmentOptions>> _conveyorSegmentOptions;
+        private readonly IOptions<List<PositionOptions>> _positionOptions;
+        private readonly IOptions<List<SensorOptions>> _sensorOptions;
         private readonly IWheelDiverterManager _wheelDiverterManager;
         private readonly IParcelManager _parcelManager;
         private readonly IPositionQueueManager _positionQueueManager;
@@ -47,9 +47,9 @@ namespace WheelDiverterSorter.Host.Servers {
 
         public PositionQueueHostedService(
             ILogger<PositionQueueHostedService> logger,
-            IOptions<IReadOnlyList<ConveyorSegmentOptions>> conveyorSegmentOptions,
-            IOptions<IReadOnlyList<PositionOptions>> positionOptions,
-            IOptions<IReadOnlyList<SensorOptions>> sensorOptions,
+            IOptions<List<ConveyorSegmentOptions>> conveyorSegmentOptions,
+            IOptions<List<PositionOptions>> positionOptions,
+            IOptions<List<SensorOptions>> sensorOptions,
             IWheelDiverterManager wheelDiverterManager,
             IParcelManager parcelManager,
             IPositionQueueManager positionQueueManager,

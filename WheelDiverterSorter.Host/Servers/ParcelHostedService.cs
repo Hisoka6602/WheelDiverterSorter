@@ -14,14 +14,14 @@ namespace WheelDiverterSorter.Host.Servers {
 
     public class ParcelHostedService : BackgroundService {
         private readonly ILogger<IoLinkageHostedService> _logger;
-        private readonly IOptions<IReadOnlyList<SensorOptions>> _sensorOptions;
+        private readonly IOptions<List<SensorOptions>> _sensorOptions;
         private readonly ISystemStateManager _systemStateManager;
         private readonly ISensorManager _sensorManager;
         private readonly IUpstreamRouting _upstreamRouting;
         private IoState _triggerState = IoState.Low;
 
         public ParcelHostedService(ILogger<IoLinkageHostedService> logger,
-            IOptions<IReadOnlyList<SensorOptions>> sensorOptions,
+            IOptions<List<SensorOptions>> sensorOptions,
             ISystemStateManager systemStateManager, IParcelManager parcelManager,
             ISensorManager sensorManager, IUpstreamRouting upstreamRouting) {
             _logger = logger;

@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using Microsoft.Extensions.Options;
 using WheelDiverterSorter.Core.Enums;
 using WheelDiverterSorter.Core.Models;
+using WheelDiverterSorter.Core.Manager;
 using WheelDiverterSorter.Core.Options;
 
 namespace WheelDiverterSorter.Host.Servers {
@@ -14,15 +15,17 @@ namespace WheelDiverterSorter.Host.Servers {
     public class IoMonitoringHostedService : BackgroundService {
         private readonly IEmcController _emcController;
         private readonly IIoPanel _ioPanel;
-        private readonly IOptions<IReadOnlyList<IoPanelButtonOptions>> _ioPanelButtonOptions;
-        private readonly IOptions<IReadOnlyList<SensorOptions>> _sensorOptions;
+        private readonly ISensorManager _sensorManager;
+        private readonly IOptions<List<IoPanelButtonOptions>> _ioPanelButtonOptions;
+        private readonly IOptions<List<SensorOptions>> _sensorOptions;
 
         public IoMonitoringHostedService(ILogger<IoLinkageHostedService> logger,
-            IEmcController emcController, IIoPanel ioPanel,
-            IOptions<IReadOnlyList<IoPanelButtonOptions>> ioPanelButtonOptions,
-            IOptions<IReadOnlyList<SensorOptions>> sensorOptions) {
+            IEmcController emcController, IIoPanel ioPanel, ISensorManager sensorManager,
+            IOptions<List<IoPanelButtonOptions>> ioPanelButtonOptions,
+            IOptions<List<SensorOptions>> sensorOptions) {
             _emcController = emcController;
             _ioPanel = ioPanel;
+            _sensorManager = sensorManager;
             _ioPanelButtonOptions = ioPanelButtonOptions;
             _sensorOptions = sensorOptions;
         }
@@ -40,17 +43,19 @@ namespace WheelDiverterSorter.Host.Servers {
                 DebounceWindowMs = w.DebounceWindowMs,
                 LastLevelChangedAtMs = null
             }).ToList();
-            ioPointInfos.AddRange(_sensorOptions.Value.Select(s => new IoPointInfo {
+            /*ioPointInfos.AddRange(_sensorOptions.Value.Select(s => new IoPointInfo {
                 Point = s.Point,
                 Type = s.Type,
                 Name = s.SensorName,
                 DebounceWindowMs = s.DebounceWindowMs,
                 LastLevelChangedAtMs = null
-            }));
+            }));*/
 
             await _emcController.SetMonitoredIoPointsAsync(ioPointInfos, stoppingToken);
-
+            await Task.Delay(500, stoppingToken);
             await _ioPanel.StartMonitoringAsync(stoppingToken);
+            await _sensorManager.StartMonitoringAsync(stoppingToken);
+
             while (!stoppingToken.IsCancellationRequested) {
                 await Task.Delay(1000, stoppingToken);
             }

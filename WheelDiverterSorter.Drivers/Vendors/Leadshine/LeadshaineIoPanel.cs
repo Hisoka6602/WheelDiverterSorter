@@ -16,6 +16,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
 	public sealed class LeadshaineIoPanel : IIoPanel {
 		private readonly IEmcController _emcController;
 		private readonly ISystemStateManager _systemStateManager;
+		private readonly IOptions<PreRunWarningOptions> _preRunWarningOptions;
 		private readonly ILogger<LeadshaineIoPanel> _logger;
 
 		private readonly object _gate = new();
@@ -41,9 +42,11 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
 			IEmcController emcController,
 			ISystemStateManager systemStateManager,
 			IOptions<List<IoPanelButtonOptions>> ioPanelButtonOptionsInfos,
+			IOptions<PreRunWarningOptions> preRunWarningOptions,
 			ILogger<LeadshaineIoPanel> logger) {
 			_emcController = emcController;
 			_systemStateManager = systemStateManager;
+			_preRunWarningOptions = preRunWarningOptions;
 			_logger = logger;
 
 			_options = ioPanelButtonOptionsInfos.Value.ToArray();
@@ -314,12 +317,31 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
 			}
 		}
 
-		private void RaiseButtonPressed(IoPanelButtonPressedEventArgs args) {
+		private async Task RaiseButtonPressed(IoPanelButtonPressedEventArgs args) {
 			try {
 				switch (args.ButtonType) {
 					case IoPanelButtonType.Start:
-						_ = ChangeStateSafeAsync(SystemState.Running);
+
 						StartButtonPressed?.Invoke(this, args);
+						//预警
+
+						var any = _preRunWarningOptions.Value.IoGroup.Any();
+						if (any) {
+							Parallel.ForEach(_preRunWarningOptions.Value.IoGroup, async p => {
+
+								await _emcController.WriteIoAsync(p.Point, p.TriggerState);
+								await Task.Delay(10);
+							});
+							await Task.Delay(_preRunWarningOptions.Value.PreWarningDurationMs);
+							Parallel.ForEach(_preRunWarningOptions.Value.IoGroup, async p => {
+
+								await _emcController.WriteIoAsync(p.Point, p.TriggerState == IoState.Low ? IoState.High : IoState.Low);
+								await Task.Delay(10);
+							});
+						}
+
+
+						_ = ChangeStateSafeAsync(SystemState.Running);
 						break;
 
 					case IoPanelButtonType.Stop:

@@ -46,7 +46,8 @@ internal class Program {
                 builder.Configuration.GetSection("PositionOptions"));
             builder.Services.Configure<List<ConveyorSegmentOptions>>(
                 builder.Configuration.GetSection("ConveyorSegmentOptions"));
-
+            builder.Services.Configure<PreRunWarningOptions>(
+                builder.Configuration.GetSection("PreRunWarning"));
             //组件注册
             builder.Services.AddSingleton<ISystemStateManager, SystemStateManager>();
             builder.Services.AddSingleton<SafeExecutor>();
@@ -104,9 +105,9 @@ internal class Program {
 
             builder.Services.AddHostedService<PositionQueueHostedService>();
 
-#if !DEBUG
-    builder.Services.AddWindowsService();
-#endif
+            /*#if !DEBUG
+                builder.Services.AddWindowsService();
+            #endif*/
             //
             var host = builder.Build();
             // 添加全局异常处理器以防止崩溃
