@@ -48,6 +48,8 @@ internal class Program {
             builder.Services.AddSingleton<IEmcController, LeadshineEmcController>();
             builder.Services.AddSingleton<IIoPanel, LeadshaineIoPanel>();
             builder.Services.AddSingleton<IUpstreamRouting, UpstreamRouting>();
+            builder.Services.AddSingleton<IParcelManager, ParcelManager>();
+
             //服务
             //日志清理服务
             builder.Services.AddHostedService<LogCleanupService>();
@@ -88,9 +90,11 @@ internal class Program {
 
             //上游路由连接服务
             builder.Services.AddHostedService<UpstreamRoutingHostedService>();
-
-            //站点服务
             //包裹服务
+            builder.Services.AddHostedService<UpstreamRoutingHostedService>();
+            //站点服务
+
+            //
             var host = builder.Build();
             // 添加全局异常处理器以防止崩溃
             AppDomain.CurrentDomain.UnhandledException += (sender, args) => {

@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using WheelDiverterSorter.Core;
 using System.Collections.Generic;
 using Microsoft.Extensions.Options;
+using WheelDiverterSorter.Core.Manager;
 using WheelDiverterSorter.Core.Options;
 
 namespace WheelDiverterSorter.Host.Servers {
@@ -12,13 +13,15 @@ namespace WheelDiverterSorter.Host.Servers {
     public class UpstreamRoutingHostedService : BackgroundService {
         private readonly ILogger<UpstreamRoutingHostedService> _logger;
         private readonly IUpstreamRouting _upstreamRouting;
+        private readonly IParcelManager _parcelManager;
         private readonly IOptions<UpstreamRoutingConnectionOptions> _upstreamRoutingConnectionOptions;
 
         public UpstreamRoutingHostedService(ILogger<UpstreamRoutingHostedService> logger,
-            IUpstreamRouting upstreamRouting,
+            IUpstreamRouting upstreamRouting, IParcelManager parcelManager,
             IOptions<UpstreamRoutingConnectionOptions> upstreamRoutingConnectionOptions) {
             _logger = logger;
             _upstreamRouting = upstreamRouting;
+            _parcelManager = parcelManager;
             _upstreamRoutingConnectionOptions = upstreamRoutingConnectionOptions;
             _upstreamRouting.Connected += async (sender, args) => {
                 Console.WriteLine("客户端连接成功");

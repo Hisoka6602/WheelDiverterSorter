@@ -11,6 +11,10 @@ namespace WheelDiverterSorter.Core.Events {
     /// </summary>
     public readonly record struct ParcelCreatedEventArgs {
         /// <summary>
+        /// 包裹Id
+        /// </summary>
+        public required long ParcelId { get; init; }
+        /// <summary>
         /// 包裹信息快照
         /// </summary>
         public required ParcelInfo Parcel { get; init; }
