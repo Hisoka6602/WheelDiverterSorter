@@ -18,7 +18,7 @@ namespace WheelDiverterSorter.Ingress {
     /// 默认传感器监控器（从 EMC 快照读取点位电平）
     /// </summary>
     public sealed class DefaultSensor : ISensorManager, IDisposable {
-        private readonly List<SensorOptions> _optionsInfos;
+        private readonly IReadOnlyList<SensorOptions> _optionsInfos;
         private readonly ILogger<DefaultSensor> _logger;
         private readonly IEmcController _emcController;
 
@@ -49,7 +49,7 @@ namespace WheelDiverterSorter.Ingress {
         public event EventHandler<SensorFaultedEventArgs>? Faulted;
 
         public DefaultSensor(
-            IOptions<List<SensorOptions>> optionsInfos,
+            IOptions<IReadOnlyList<SensorOptions>> optionsInfos,
             ILogger<DefaultSensor> logger,
             IEmcController emcController) {
             _optionsInfos = optionsInfos.Value ?? [];

@@ -12,12 +12,12 @@ namespace WheelDiverterSorter.Host.Servers {
 
     public class WheelDiverterHostedService : BackgroundService {
         private readonly ILogger<IoLinkageHostedService> _logger;
-        private readonly IOptions<List<WheelDiverterConnectionOptions>> _wheelDiverterConnectionOptions;
+        private readonly IOptions<IReadOnlyList<WheelDiverterConnectionOptions>> _wheelDiverterConnectionOptions;
         private readonly IWheelDiverterManager _wheelDiverterManager;
         private readonly ISystemStateManager _systemStateManager;
 
         public WheelDiverterHostedService(ILogger<IoLinkageHostedService> logger,
-            IOptions<List<WheelDiverterConnectionOptions>> wheelDiverterConnectionOptions,
+            IOptions<IReadOnlyList<WheelDiverterConnectionOptions>> wheelDiverterConnectionOptions,
             IWheelDiverterManager wheelDiverterManager,
             ISystemStateManager systemStateManager) {
             _logger = logger;

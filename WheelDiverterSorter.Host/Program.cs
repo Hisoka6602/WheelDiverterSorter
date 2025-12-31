@@ -36,12 +36,17 @@ internal class Program {
             builder.Services.Configure<UpstreamRoutingConnectionOptions>(
                 builder.Configuration.GetSection("UpstreamRoutingConnectionOptions"));
 
-            builder.Services.Configure<List<IoPanelButtonOptions>>(
+            builder.Services.Configure<IReadOnlyList<IoPanelButtonOptions>>(
                 builder.Configuration.GetSection("IoPanelButtonOptions"));
-            builder.Services.Configure<List<IoLinkagePointOptions>>(
+            builder.Services.Configure<IReadOnlyList<IoLinkagePointOptions>>(
                 builder.Configuration.GetSection("IoLinkagePointOptions"));
-            builder.Services.Configure<List<SensorOptions>>(
+            builder.Services.Configure<IReadOnlyList<SensorOptions>>(
                 builder.Configuration.GetSection("SensorOptions"));
+            builder.Services.Configure<IReadOnlyList<PositionOptions>>(
+                builder.Configuration.GetSection("PositionOptions"));
+            builder.Services.Configure<IReadOnlyList<ConveyorSegmentOptions>>(
+                builder.Configuration.GetSection("ConveyorSegmentOptions"));
+
             //组件注册
             builder.Services.AddSingleton<ISystemStateManager, SystemStateManager>();
             builder.Services.AddSingleton<SafeExecutor>();
@@ -58,14 +63,14 @@ internal class Program {
             //IO联动服务
             builder.Services.AddHostedService<IoLinkageHostedService>();
             //摆轮管理服务
-            builder.Services.AddOptions<List<WheelDiverterConnectionOptions>>()
+            builder.Services.AddOptions<IReadOnlyList<WheelDiverterConnectionOptions>>()
                 .Bind(builder.Configuration.GetSection("WheelDiverterConnectionOptions"))
                 .Validate(list => list is { Count: > 0 }, "配置无效：WheelDiverterConnectionOptions 不能为空")
                 .Validate(list => list.Select(x => x.DiverterId).Distinct().Count() == list.Count, "配置无效：DiverterId 必须唯一")
                 .ValidateOnStart();
 
             builder.Services.AddSingleton<List<IWheelDiverter>>(sp => {
-                var options = sp.GetRequiredService<IOptions<List<WheelDiverterConnectionOptions>>>().Value;
+                var options = sp.GetRequiredService<IOptions<IReadOnlyList<WheelDiverterConnectionOptions>>>().Value;
 
                 var ordered = options
                     .OrderBy(static x => x.DiverterId)
@@ -94,6 +99,9 @@ internal class Program {
             builder.Services.AddHostedService<UpstreamRoutingHostedService>();
             //站点服务
 
+#if !DEBUG
+    builder.Services.AddWindowsService();
+#endif
             //
             var host = builder.Build();
             // 添加全局异常处理器以防止崩溃

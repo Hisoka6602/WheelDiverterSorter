@@ -46,7 +46,7 @@ namespace WheelDiverterSorter.Host.Servers {
             ILogger<IoLinkageHostedService> logger,
             ISystemStateManager systemStateManager,
             IEmcController emcController,
-            IOptions<List<IoLinkagePointOptions>> ioLinkagePointOptionsInfos) {
+            IOptions<IReadOnlyList<IoLinkagePointOptions>> ioLinkagePointOptionsInfos) {
             _logger = logger;
             _systemStateManager = systemStateManager;
             _emcController = emcController;
