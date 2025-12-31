@@ -24,6 +24,11 @@ namespace WheelDiverterSorter.Execution {
         private int[] _positions = [];
 
         /// <summary>
+        /// 位置索引集合（强顺序，只读快照，零拷贝）
+        /// </summary>
+        public IReadOnlyList<int> Positions => Volatile.Read(ref _positions);
+
+        /// <summary>
         /// 异常隔离：事件直接触发，但捕获异常保证不影响调用链
         /// </summary>
         public event EventHandler<PositionQueueManagerFaultedEventArgs>? Faulted;
@@ -39,10 +44,13 @@ namespace WheelDiverterSorter.Execution {
                         return ValueTask.FromResult(false);
                     }
 
-                    var newArr = new int[_positions.Length + 1];
-                    Array.Copy(_positions, newArr, _positions.Length);
+                    var old = _positions;
+                    var newArr = new int[old.Length + 1];
+                    Array.Copy(old, newArr, old.Length);
                     newArr[^1] = positionIndex;
-                    _positions = newArr;
+
+                    // 发布新快照（整体替换，读侧零拷贝）
+                    Volatile.Write(ref _positions, newArr);
                 }
 
                 _ = GetOrCreateActor(positionIndex);
@@ -70,14 +78,16 @@ namespace WheelDiverterSorter.Execution {
                         return ValueTask.FromResult(false);
                     }
 
-                    var newArr = new int[_positions.Length + positionIndexes.Count];
-                    Array.Copy(_positions, newArr, _positions.Length);
+                    var old = _positions;
+                    var newArr = new int[old.Length + positionIndexes.Count];
+                    Array.Copy(old, newArr, old.Length);
 
                     for (var i = 0; i < positionIndexes.Count; i++) {
-                        newArr[_positions.Length + i] = positionIndexes[i];
+                        newArr[old.Length + i] = positionIndexes[i];
                     }
 
-                    _positions = newArr;
+                    // 发布新快照（整体替换，读侧零拷贝）
+                    Volatile.Write(ref _positions, newArr);
                 }
 
                 foreach (var t in positionIndexes) {
@@ -100,14 +110,19 @@ namespace WheelDiverterSorter.Execution {
 
                 int[] removed;
                 lock (_positionsGate) {
-                    if (count > _positions.Length) {
+                    var old = _positions;
+
+                    if (count > old.Length) {
                         return ValueTask.FromResult(false);
                     }
 
-                    removed = _positions[^count..];
-                    var newArr = new int[_positions.Length - count];
-                    Array.Copy(_positions, newArr, newArr.Length);
-                    _positions = newArr;
+                    removed = old[^count..];
+
+                    var newArr = new int[old.Length - count];
+                    Array.Copy(old, newArr, newArr.Length);
+
+                    // 发布新快照（整体替换，读侧零拷贝）
+                    Volatile.Write(ref _positions, newArr);
                 }
 
                 foreach (var idx in removed) {
@@ -124,11 +139,11 @@ namespace WheelDiverterSorter.Execution {
             }
         }
 
-        public IReadOnlyList<int> GetPositionsSnapshot() {
-            lock (_positionsGate) {
-                return _positions.Length == 0 ? [] : _positions.ToArray();
-            }
-        }
+        /// <summary>
+        /// 获取 Position 快照（零拷贝）
+        /// </summary>
+        public IReadOnlyList<int> GetPositionsSnapshot()
+            => Volatile.Read(ref _positions);
 
         public ValueTask<bool> CreateTaskAsync(PositionQueueTask task, CancellationToken cancellationToken = default) {
             try {
@@ -145,16 +160,17 @@ namespace WheelDiverterSorter.Execution {
             }
         }
 
-        public ValueTask<bool> UpdateTaskAsync(PositionQueueTask task, string? reason = null, CancellationToken cancellationToken = default) {
+        public ValueTask<bool> UpdateTaskAsync(PositionQueueTaskPatch patch, string? reason = null, CancellationToken cancellationToken = default) {
             try {
-                if (!task.IsValid || !_actors.TryGetValue(task.PositionIndex, out var actor)) {
+                if (!patch.IsValid || !_actors.TryGetValue(patch.PositionIndex, out var actor)) {
                     return ValueTask.FromResult(false);
                 }
 
-                return actor.EnqueueBoolAsync(PositionCommand.CreateUpdate(task, reason), cancellationToken);
+                // PositionIndex 禁止修改：Actor 内双保险校验
+                return actor.EnqueueBoolAsync(PositionCommand.CreatePatchUpdate(patch, reason), cancellationToken);
             }
             catch (Exception ex) {
-                PublishFaulted(ex, "更新任务失败", task.PositionIndex, task.ParcelId);
+                PublishFaulted(ex, "部分更新任务失败", patch.PositionIndex, patch.ParcelId);
                 return ValueTask.FromResult(false);
             }
         }
@@ -165,7 +181,7 @@ namespace WheelDiverterSorter.Execution {
                     return ValueTask.FromResult(false);
                 }
 
-                // 重要：禁止中间删除。仅允许删除队首任务（包含失效任务）
+                // 保持“按 parcelId 定位”但仍不允许中间删除：只允许队首匹配时删除
                 return actor.EnqueueBoolAsync(PositionCommand.CreateRemoveHeadIfMatch(parcelId, reason), cancellationToken);
             }
             catch (Exception ex) {
@@ -184,7 +200,7 @@ namespace WheelDiverterSorter.Execution {
                 }
 
                 var tasks = new List<Task>(_actors.Count);
-                tasks.AddRange(_actors.Values.Select(actor => actor.EnqueueBoolAsync(PositionCommand.CreateClear(reason), cancellationToken).AsTask()).Cast<Task>());
+                tasks.AddRange(_actors.Values.Select(a => a.EnqueueBoolAsync(PositionCommand.CreateClear(reason), cancellationToken).AsTask()).Cast<Task>());
 
                 await Task.WhenAll(tasks).ConfigureAwait(false);
             }
@@ -202,7 +218,7 @@ namespace WheelDiverterSorter.Execution {
                     return [];
                 }
 
-                // 高频读优化：直接返回内部快照数组（快照整体替换，读侧零拷贝）
+                // 高频读优化：直接返回内部快照数组（整体替换，读侧零拷贝）
                 return actor.Snapshot;
             }
             catch (Exception ex) {
@@ -211,14 +227,12 @@ namespace WheelDiverterSorter.Execution {
             }
         }
 
-        public bool TryPeekFirstValidTask(int positionIndex, out PositionQueueTask task) {
-            // 语义调整：返回队首任务（可能为失效），不做跳过决策
+        public bool TryPeekFirstTask(int positionIndex, out PositionQueueTask task) {
             task = default;
             return _actors.TryGetValue(positionIndex, out var actor) && actor.TryPeekFirst(out task);
         }
 
-        public bool TryPeekSecondValidTask(int positionIndex, out PositionQueueTask task) {
-            // 语义调整：返回第二个任务（可能为失效），不做跳过决策
+        public bool TryPeekSecondTask(int positionIndex, out PositionQueueTask task) {
             task = default;
             return _actors.TryGetValue(positionIndex, out var actor) && actor.TryPeekSecond(out task);
         }
@@ -237,18 +251,89 @@ namespace WheelDiverterSorter.Execution {
             }
         }
 
-        public ValueTask<bool> DequeueAsync(int positionIndex, long parcelId, string? reason = null, CancellationToken cancellationToken = default) {
+        public ValueTask<bool> DequeueAsync(int positionIndex, string? reason = null, CancellationToken cancellationToken = default) {
             try {
-                if (positionIndex < 0 || parcelId <= 0 || !_actors.TryGetValue(positionIndex, out var actor)) {
+                if (positionIndex < 0 || !_actors.TryGetValue(positionIndex, out var actor)) {
                     return ValueTask.FromResult(false);
                 }
 
-                // 只允许队首任务出队（包含失效任务），避免跳过导致中间出队
-                return actor.EnqueueBoolAsync(PositionCommand.CreateDequeueHeadIfMatch(parcelId, reason), cancellationToken);
+                // 新语义：只出队队首（不管是否失效，不做 parcelId 匹配）
+                return actor.EnqueueBoolAsync(PositionCommand.CreateDequeueHead(reason), cancellationToken);
             }
             catch (Exception ex) {
-                PublishFaulted(ex, "出队失败", positionIndex, parcelId);
+                PublishFaulted(ex, "出队失败", positionIndex);
                 return ValueTask.FromResult(false);
+            }
+        }
+
+        public async ValueTask<int> InvalidateTasksAfterPositionAsync(int positionIndex, long parcelId, string? reason = null, CancellationToken cancellationToken = default) {
+            try {
+                if (positionIndex < 0 || parcelId <= 0) {
+                    return 0;
+                }
+
+                var positionsSnapshot = Volatile.Read(ref _positions);
+                if (positionsSnapshot.Length == 0) {
+                    return 0;
+                }
+
+                var pivot = Array.IndexOf(positionsSnapshot, positionIndex);
+                if (pivot < 0 || pivot >= positionsSnapshot.Length - 1) {
+                    return 0;
+                }
+
+                var count = 0;
+                for (var i = pivot + 1; i < positionsSnapshot.Length; i++) {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var pos = positionsSnapshot[i];
+                    if (!_actors.TryGetValue(pos, out var actor)) {
+                        continue;
+                    }
+
+                    var ok = await actor.EnqueueBoolAsync(PositionCommand.CreateInvalidate(parcelId, reason), cancellationToken).ConfigureAwait(false);
+                    if (ok) {
+                        count++;
+                    }
+                }
+
+                return count;
+            }
+            catch (OperationCanceledException) {
+                return 0;
+            }
+            catch (Exception ex) {
+                PublishFaulted(ex, "标记后续 Position 任务失效失败", positionIndex, parcelId);
+                return 0;
+            }
+        }
+
+        public ValueTask<PositionQueuePeekResult> PeekFirstTaskAfterPruneAsync(
+            int positionIndex,
+            int maxPruneCount = 64,
+            string? reason = null,
+            CancellationToken cancellationToken = default) {
+            try {
+                if (positionIndex < 0 || !_actors.TryGetValue(positionIndex, out var actor)) {
+                    return ValueTask.FromResult(new PositionQueuePeekResult {
+                        HasTask = false,
+                        Task = default,
+                        PrunedCount = 0,
+                        IsPruneLimitReached = false
+                    });
+                }
+
+                var normalizedMax = maxPruneCount <= 0 ? 0 : maxPruneCount;
+                return actor.EnqueuePeekAfterPruneAsync(normalizedMax, reason, cancellationToken);
+            }
+            catch (Exception ex) {
+                PublishFaulted(ex, "PeekFirstTaskAfterPruneAsync 失败", positionIndex);
+                return ValueTask.FromResult(new PositionQueuePeekResult {
+                    HasTask = false,
+                    Task = default,
+                    PrunedCount = 0,
+                    IsPruneLimitReached = false
+                });
             }
         }
 
@@ -306,7 +391,6 @@ namespace WheelDiverterSorter.Execution {
             public PositionQueueTask[] Snapshot => Volatile.Read(ref _snapshot);
 
             public void Stop(string reason) {
-                // 先完成写端，再取消用于加速退出 WaitToRead
                 _channel.Writer.TryComplete();
                 _cts.Cancel();
             }
@@ -338,6 +422,7 @@ namespace WheelDiverterSorter.Execution {
 
             public bool TryPeekFirst(out PositionQueueTask task) {
                 task = default;
+
                 var snap = Volatile.Read(ref _snapshot);
                 if (snap.Length == 0) {
                     return false;
@@ -349,6 +434,7 @@ namespace WheelDiverterSorter.Execution {
 
             public bool TryPeekSecond(out PositionQueueTask task) {
                 task = default;
+
                 var snap = Volatile.Read(ref _snapshot);
                 if (snap.Length < 2) {
                     return false;
@@ -365,7 +451,6 @@ namespace WheelDiverterSorter.Execution {
                     while (await reader.WaitToReadAsync(_cts.Token).ConfigureAwait(false)) {
                         var dirty = false;
 
-                        // 批处理：同一批次 drain 完后只刷新一次快照
                         while (reader.TryRead(out var cmd)) {
                             try {
                                 dirty |= Handle(cmd);
@@ -373,6 +458,12 @@ namespace WheelDiverterSorter.Execution {
                             catch (Exception ex) {
                                 _owner.PublishFaulted(ex, "PositionActor 处理命令异常", _positionIndex);
                                 cmd.BoolTcs?.TrySetResult(false);
+                                cmd.PeekTcs?.TrySetResult(new PositionQueuePeekResult {
+                                    HasTask = false,
+                                    Task = default,
+                                    PrunedCount = 0,
+                                    IsPruneLimitReached = false
+                                });
                             }
                         }
 
@@ -388,9 +479,14 @@ namespace WheelDiverterSorter.Execution {
                     _owner.PublishFaulted(ex, "PositionActor Pump 异常", _positionIndex);
                 }
                 finally {
-                    // 兜底：释放残留等待方，避免挂起
                     while (reader.TryRead(out var pending)) {
                         pending.BoolTcs?.TrySetResult(false);
+                        pending.PeekTcs?.TrySetResult(new PositionQueuePeekResult {
+                            HasTask = false,
+                            Task = default,
+                            PrunedCount = 0,
+                            IsPruneLimitReached = false
+                        });
                     }
                 }
             }
@@ -400,20 +496,23 @@ namespace WheelDiverterSorter.Execution {
                     case CommandKind.Create:
                         return HandleCreate(cmd.Task, cmd.BoolTcs);
 
-                    case CommandKind.Update:
-                        return HandleUpdate(cmd.Task, cmd.BoolTcs);
+                    case CommandKind.PatchUpdate:
+                        return HandlePatchUpdate(cmd.Patch, cmd.BoolTcs);
 
                     case CommandKind.Invalidate:
-                        return HandleInvalidate(cmd.ParcelId, cmd.Reason, cmd.BoolTcs);
+                        return HandleInvalidate(cmd.ParcelId, cmd.BoolTcs);
 
                     case CommandKind.RemoveHeadIfMatch:
                         return HandleRemoveHeadIfMatch(cmd.ParcelId, cmd.BoolTcs);
 
-                    case CommandKind.DequeueHeadIfMatch:
-                        return HandleDequeueHeadIfMatch(cmd.ParcelId, cmd.BoolTcs);
+                    case CommandKind.DequeueHead:
+                        return HandleDequeueHead(cmd.BoolTcs);
 
                     case CommandKind.Clear:
                         return HandleClear(cmd.BoolTcs);
+
+                    case CommandKind.PeekFirstAfterPrune:
+                        return HandlePeekFirstAfterPrune(cmd.MaxPruneCount, cmd.Reason, cmd.PeekTcs);
 
                     default:
                         cmd.BoolTcs?.TrySetResult(false);
@@ -427,33 +526,89 @@ namespace WheelDiverterSorter.Execution {
                     return false;
                 }
 
-                // 入队默认视为未失效
+                if (task.PositionIndex != _positionIndex) {
+                    tcs?.TrySetResult(false);
+                    return false;
+                }
+
                 var normalized = task.IsInvalidated ? task with { IsInvalidated = false } : task;
 
                 var node = _queue.AddLast(new Entry { Task = normalized });
                 _index.Add(normalized.ParcelId, node);
 
+                // 关键：入队后，用本任务 EarliestDequeueAt 回写“前一个可用任务”的 LostDecisionAt
+                var dirty = TryUpdatePrevLostDecisionAtByNext(node);
+
                 tcs?.TrySetResult(true);
-                return true;
+                return true | dirty;
             }
 
-            private bool HandleUpdate(in PositionQueueTask task, TaskCompletionSource<bool>? tcs) {
-                if (!task.IsValid || !_index.TryGetValue(task.ParcelId, out var node)) {
+            private bool HandlePatchUpdate(in PositionQueueTaskPatch patch, TaskCompletionSource<bool>? tcs) {
+                if (!patch.IsValid) {
                     tcs?.TrySetResult(false);
                     return false;
                 }
 
-                // Update 不覆盖失效标记，避免将已失效任务“复活”
+                if (patch.PositionIndex != _positionIndex) {
+                    tcs?.TrySetResult(false);
+                    return false;
+                }
+
+                if (!_index.TryGetValue(patch.ParcelId, out var node)) {
+                    tcs?.TrySetResult(false);
+                    return false;
+                }
+
                 var oldTask = node.Value.Task;
-                var merged = task with { IsInvalidated = oldTask.IsInvalidated };
+
+                if (oldTask.PositionIndex != patch.PositionIndex) {
+                    tcs?.TrySetResult(false);
+                    return false;
+                }
+
+                var merged = oldTask;
+
+                if (patch.HasAction) {
+                    merged = merged with { Action = patch.Action };
+                }
+
+                if (patch.HasEarliestDequeueAt) {
+                    merged = merged with { EarliestDequeueAt = patch.EarliestDequeueAt };
+                }
+
+                if (patch.HasLatestDequeueAt) {
+                    merged = merged with { LatestDequeueAt = patch.LatestDequeueAt };
+                }
+
+                if (patch.HasLostDecisionAt) {
+                    merged = merged with { LostDecisionAt = patch.LostDecisionAt };
+                }
+
+                merged = merged with { IsInvalidated = oldTask.IsInvalidated };
+
+                if (merged.EarliestDequeueAt > merged.LatestDequeueAt) {
+                    tcs?.TrySetResult(false);
+                    return false;
+                }
+
+                if (merged.LostDecisionAt is not null && merged.LatestDequeueAt > merged.LostDecisionAt.Value) {
+                    tcs?.TrySetResult(false);
+                    return false;
+                }
 
                 node.Value = node.Value with { Task = merged };
 
+                // 关键：当 EarliestDequeueAt 被修改时，用新 Earliest 回写“前一个可用任务”的 LostDecisionAt
+                var dirty = true;
+                if (patch.HasEarliestDequeueAt) {
+                    dirty |= TryUpdatePrevLostDecisionAtByNext(node);
+                }
+
                 tcs?.TrySetResult(true);
-                return true;
+                return dirty;
             }
 
-            private bool HandleInvalidate(long parcelId, string? reason, TaskCompletionSource<bool>? tcs) {
+            private bool HandleInvalidate(long parcelId, TaskCompletionSource<bool>? tcs) {
                 if (!_index.TryGetValue(parcelId, out var node)) {
                     tcs?.TrySetResult(false);
                     return false;
@@ -467,12 +622,14 @@ namespace WheelDiverterSorter.Execution {
 
                 node.Value = node.Value with { Task = oldTask with { IsInvalidated = true } };
 
+                // 失效后，修正前后关联的 LostDecisionAt（避免误判）
+                var dirty = FixLostDecisionAround(node);
+
                 tcs?.TrySetResult(true);
-                return true;
+                return true | dirty;
             }
 
             private bool HandleRemoveHeadIfMatch(long parcelId, TaskCompletionSource<bool>? tcs) {
-                // 禁止中间删除：仅允许删除队首任务（包含失效任务）
                 var head = _queue.First;
                 if (head is null || head.Value.Task.ParcelId != parcelId) {
                     tcs?.TrySetResult(false);
@@ -485,10 +642,9 @@ namespace WheelDiverterSorter.Execution {
                 return true;
             }
 
-            private bool HandleDequeueHeadIfMatch(long parcelId, TaskCompletionSource<bool>? tcs) {
-                // 禁止中间出队：仅允许队首任务出队（包含失效任务）
+            private bool HandleDequeueHead(TaskCompletionSource<bool>? tcs) {
                 var head = _queue.First;
-                if (head is null || head.Value.Task.ParcelId != parcelId) {
+                if (head is null) {
                     tcs?.TrySetResult(false);
                     return false;
                 }
@@ -510,6 +666,59 @@ namespace WheelDiverterSorter.Execution {
 
                 tcs?.TrySetResult(true);
                 return true;
+            }
+
+            private bool HandlePeekFirstAfterPrune(int maxPruneCount, string? reason, TaskCompletionSource<PositionQueuePeekResult>? tcs) {
+                var pruned = 0;
+
+                while (true) {
+                    var head = _queue.First;
+                    if (head is null) {
+                        tcs?.TrySetResult(new PositionQueuePeekResult {
+                            HasTask = false,
+                            Task = default,
+                            PrunedCount = pruned,
+                            IsPruneLimitReached = false
+                        });
+                        return pruned > 0;
+                    }
+
+                    var task = head.Value.Task;
+
+                    if (!task.IsValid || task.IsInvalidated) {
+                        if (maxPruneCount > 0 && pruned >= maxPruneCount) {
+                            _owner.PublishFaulted(
+                                new InvalidOperationException($"清理队首无效任务达到上限：PositionIndex={_positionIndex}, MaxPruneCount={maxPruneCount}, Reason={reason}"),
+                                "PeekFirstTaskAfterPruneAsync 达到清理上限",
+                                _positionIndex);
+
+                            tcs?.TrySetResult(new PositionQueuePeekResult {
+                                HasTask = false,
+                                Task = default,
+                                PrunedCount = pruned,
+                                IsPruneLimitReached = true
+                            });
+
+                            return pruned > 0;
+                        }
+
+                        RemoveNode(head);
+                        pruned++;
+
+                        // 失效任务被移除后，可能需要修正相邻 LostDecisionAt（避免误判）
+                        FixLostDecisionAround(head.Next);
+                        continue;
+                    }
+
+                    tcs?.TrySetResult(new PositionQueuePeekResult {
+                        HasTask = true,
+                        Task = task,
+                        PrunedCount = pruned,
+                        IsPruneLimitReached = false
+                    });
+
+                    return pruned > 0;
+                }
             }
 
             private void RemoveNode(LinkedListNode<Entry> node) {
@@ -534,6 +743,125 @@ namespace WheelDiverterSorter.Execution {
                 Volatile.Write(ref _snapshot, arr);
             }
 
+            public ValueTask<PositionQueuePeekResult> EnqueuePeekAfterPruneAsync(int maxPruneCount, string? reason, CancellationToken cancellationToken) {
+                if (cancellationToken.IsCancellationRequested) {
+                    return ValueTask.FromCanceled<PositionQueuePeekResult>(cancellationToken);
+                }
+
+                var tcs = new TaskCompletionSource<PositionQueuePeekResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var cmd = PositionCommand.CreatePeekFirstAfterPrune(maxPruneCount, reason) with { PeekTcs = tcs };
+
+                if (!_channel.Writer.TryWrite(cmd)) {
+                    return ValueTask.FromResult(new PositionQueuePeekResult {
+                        HasTask = false,
+                        Task = default,
+                        PrunedCount = 0,
+                        IsPruneLimitReached = false
+                    });
+                }
+
+                if (!cancellationToken.CanBeCanceled) {
+                    return new ValueTask<PositionQueuePeekResult>(tcs.Task);
+                }
+
+                var reg = cancellationToken.Register(static s => ((TaskCompletionSource<PositionQueuePeekResult>)s!).TrySetCanceled(), tcs);
+                return AwaitWithDisposeAsync(tcs.Task, reg);
+
+                static async ValueTask<PositionQueuePeekResult> AwaitWithDisposeAsync(Task<PositionQueuePeekResult> task, CancellationTokenRegistration reg) {
+                    try { return await task.ConfigureAwait(false); }
+                    finally { await reg.DisposeAsync().ConfigureAwait(false); }
+                }
+            }
+
+            private static bool IsProcessable(in PositionQueueTask task)
+    => task.IsValid && !task.IsInvalidated;
+
+            private LinkedListNode<Entry>? FindPrevProcessableNode(LinkedListNode<Entry>? start) {
+                for (var n = start; n is not null; n = n.Previous) {
+                    if (IsProcessable(n.Value.Task)) {
+                        return n;
+                    }
+                }
+                return null;
+            }
+
+            private LinkedListNode<Entry>? FindNextProcessableNode(LinkedListNode<Entry>? start) {
+                for (var n = start; n is not null; n = n.Next) {
+                    if (IsProcessable(n.Value.Task)) {
+                        return n;
+                    }
+                }
+                return null;
+            }
+
+            /// <summary>
+            /// 用“next 的 EarliestDequeueAt”回写“prev 的 LostDecisionAt”，并确保不早于 prev.LatestDequeueAt
+            /// </summary>
+            private bool TryUpdatePrevLostDecisionAtByNext(LinkedListNode<Entry>? nextNode) {
+                if (nextNode is null) {
+                    return false;
+                }
+
+                if (!IsProcessable(nextNode.Value.Task)) {
+                    return false;
+                }
+
+                var prevNode = FindPrevProcessableNode(nextNode.Previous);
+                if (prevNode is null) {
+                    return false;
+                }
+
+                var prevTask = prevNode.Value.Task;
+                var nextTask = nextNode.Value.Task;
+
+                var candidate = nextTask.EarliestDequeueAt > prevTask.LatestDequeueAt
+                    ? nextTask.EarliestDequeueAt
+                    : prevTask.LatestDequeueAt;
+
+                if (prevTask.LostDecisionAt == candidate) {
+                    return false;
+                }
+
+                prevNode.Value = prevNode.Value with { Task = prevTask with { LostDecisionAt = candidate } };
+                return true;
+            }
+
+            /// <summary>
+            /// 当中间任务被失效/移除后，修正“前一个可用任务”的 LostDecisionAt 指向“后一个可用任务”的 EarliestDequeueAt；
+            /// 若后继不存在，则清空 LostDecisionAt（丢失不允许凭空判断，仅能超时）
+            /// </summary>
+            private bool FixLostDecisionAround(LinkedListNode<Entry>? pivot) {
+                var prev = FindPrevProcessableNode(pivot?.Previous ?? _queue.Last);
+                if (prev is null) {
+                    return false;
+                }
+
+                var next = FindNextProcessableNode(prev.Next);
+                var prevTask = prev.Value.Task;
+
+                if (next is null) {
+                    if (prevTask.LostDecisionAt is null) {
+                        return false;
+                    }
+
+                    prev.Value = prev.Value with { Task = prevTask with { LostDecisionAt = null } };
+                    return true;
+                }
+
+                var nextTask = next.Value.Task;
+
+                var candidate = nextTask.EarliestDequeueAt > prevTask.LatestDequeueAt
+                    ? nextTask.EarliestDequeueAt
+                    : prevTask.LatestDequeueAt;
+
+                if (prevTask.LostDecisionAt == candidate) {
+                    return false;
+                }
+
+                prev.Value = prev.Value with { Task = prevTask with { LostDecisionAt = candidate } };
+                return true;
+            }
+
             private readonly record struct Entry {
                 public required PositionQueueTask Task { get; init; }
             }
@@ -545,9 +873,9 @@ namespace WheelDiverterSorter.Execution {
             [Description("创建任务")]
             Create = 1,
 
-            /// <summary>更新任务</summary>
-            [Description("更新任务")]
-            Update = 2,
+            /// <summary>部分更新任务</summary>
+            [Description("部分更新任务")]
+            PatchUpdate = 2,
 
             /// <summary>标记任务失效</summary>
             [Description("标记任务失效")]
@@ -557,27 +885,41 @@ namespace WheelDiverterSorter.Execution {
             [Description("仅当队首匹配时移除")]
             RemoveHeadIfMatch = 4,
 
-            /// <summary>仅当队首匹配时出队</summary>
-            [Description("仅当队首匹配时出队")]
-            DequeueHeadIfMatch = 5,
+            /// <summary>出队队首</summary>
+            [Description("出队队首")]
+            DequeueHead = 5,
 
             /// <summary>清空队列</summary>
             [Description("清空队列")]
-            Clear = 6
+            Clear = 6,
+
+            /// <summary>清理队首无效任务后窥探队首</summary>
+            [Description("清理队首无效任务后窥探队首")]
+            PeekFirstAfterPrune = 7
         }
 
         private readonly record struct PositionCommand {
             public required CommandKind Kind { get; init; }
+
             public PositionQueueTask Task { get; init; }
+
+            public PositionQueueTaskPatch Patch { get; init; }
+
             public long ParcelId { get; init; }
+
+            public int MaxPruneCount { get; init; }
+
             public string? Reason { get; init; }
+
             public TaskCompletionSource<bool>? BoolTcs { get; init; }
+
+            public TaskCompletionSource<PositionQueuePeekResult>? PeekTcs { get; init; }
 
             public static PositionCommand CreateCreate(PositionQueueTask task)
                 => new() { Kind = CommandKind.Create, Task = task };
 
-            public static PositionCommand CreateUpdate(PositionQueueTask task, string? reason)
-                => new() { Kind = CommandKind.Update, Task = task, Reason = reason };
+            public static PositionCommand CreatePatchUpdate(PositionQueueTaskPatch patch, string? reason)
+                => new() { Kind = CommandKind.PatchUpdate, Patch = patch, Reason = reason };
 
             public static PositionCommand CreateInvalidate(long parcelId, string? reason)
                 => new() { Kind = CommandKind.Invalidate, ParcelId = parcelId, Reason = reason };
@@ -585,11 +927,14 @@ namespace WheelDiverterSorter.Execution {
             public static PositionCommand CreateRemoveHeadIfMatch(long parcelId, string? reason)
                 => new() { Kind = CommandKind.RemoveHeadIfMatch, ParcelId = parcelId, Reason = reason };
 
-            public static PositionCommand CreateDequeueHeadIfMatch(long parcelId, string? reason)
-                => new() { Kind = CommandKind.DequeueHeadIfMatch, ParcelId = parcelId, Reason = reason };
+            public static PositionCommand CreateDequeueHead(string? reason)
+                => new() { Kind = CommandKind.DequeueHead, Reason = reason };
 
             public static PositionCommand CreateClear(string? reason)
                 => new() { Kind = CommandKind.Clear, Reason = reason };
+
+            public static PositionCommand CreatePeekFirstAfterPrune(int maxPruneCount, string? reason)
+                => new() { Kind = CommandKind.PeekFirstAfterPrune, MaxPruneCount = maxPruneCount, Reason = reason };
         }
     }
 }

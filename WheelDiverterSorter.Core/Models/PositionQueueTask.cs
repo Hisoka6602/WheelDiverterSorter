@@ -43,7 +43,7 @@ namespace WheelDiverterSorter.Core.Models {
         /// <summary>
         /// 判定为包裹丢失时间
         /// </summary>
-        public required DateTimeOffset LostDecisionAt { get; init; }
+        public required DateTimeOffset? LostDecisionAt { get; init; }
 
         /// <summary>是否已被标记为失效（由上层决定是否出队）</summary>
         public bool IsInvalidated { get; init; }
@@ -54,6 +54,6 @@ namespace WheelDiverterSorter.Core.Models {
             PositionIndex >= 0
             && ParcelId > 0
             && EarliestDequeueAt <= LatestDequeueAt
-            && LatestDequeueAt <= LostDecisionAt;
+            && (LostDecisionAt is null || LatestDequeueAt <= LostDecisionAt.Value);
     }
 }

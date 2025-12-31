@@ -40,7 +40,7 @@ namespace WheelDiverterSorter.Drivers.Vendors.Leadshine {
 		public LeadshaineIoPanel(
 			IEmcController emcController,
 			ISystemStateManager systemStateManager,
-			IOptions<IReadOnlyList<IoPanelButtonOptions>> ioPanelButtonOptionsInfos,
+			IOptions<List<IoPanelButtonOptions>> ioPanelButtonOptionsInfos,
 			ILogger<LeadshaineIoPanel> logger) {
 			_emcController = emcController;
 			_systemStateManager = systemStateManager;

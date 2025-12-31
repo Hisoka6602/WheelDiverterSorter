@@ -36,15 +36,15 @@ internal class Program {
             builder.Services.Configure<UpstreamRoutingConnectionOptions>(
                 builder.Configuration.GetSection("UpstreamRoutingConnectionOptions"));
 
-            builder.Services.Configure<IReadOnlyList<IoPanelButtonOptions>>(
+            builder.Services.Configure<List<IoPanelButtonOptions>>(
                 builder.Configuration.GetSection("IoPanelButtonOptions"));
-            builder.Services.Configure<IReadOnlyList<IoLinkagePointOptions>>(
+            builder.Services.Configure<List<IoLinkagePointOptions>>(
                 builder.Configuration.GetSection("IoLinkagePointOptions"));
-            builder.Services.Configure<IReadOnlyList<SensorOptions>>(
+            builder.Services.Configure<List<SensorOptions>>(
                 builder.Configuration.GetSection("SensorOptions"));
-            builder.Services.Configure<IReadOnlyList<PositionOptions>>(
+            builder.Services.Configure<List<PositionOptions>>(
                 builder.Configuration.GetSection("PositionOptions"));
-            builder.Services.Configure<IReadOnlyList<ConveyorSegmentOptions>>(
+            builder.Services.Configure<List<ConveyorSegmentOptions>>(
                 builder.Configuration.GetSection("ConveyorSegmentOptions"));
 
             //组件注册
@@ -54,7 +54,8 @@ internal class Program {
             builder.Services.AddSingleton<IIoPanel, LeadshaineIoPanel>();
             builder.Services.AddSingleton<IUpstreamRouting, UpstreamRouting>();
             builder.Services.AddSingleton<IParcelManager, ParcelManager>();
-
+            builder.Services.AddSingleton<IPositionQueueManager, PositionQueueManager>();
+            builder.Services.AddSingleton<ISensorManager, DefaultSensor>();
             //服务
             //日志清理服务
             builder.Services.AddHostedService<LogCleanupService>();
@@ -63,14 +64,14 @@ internal class Program {
             //IO联动服务
             builder.Services.AddHostedService<IoLinkageHostedService>();
             //摆轮管理服务
-            builder.Services.AddOptions<IReadOnlyList<WheelDiverterConnectionOptions>>()
+            builder.Services.AddOptions<List<WheelDiverterConnectionOptions>>()
                 .Bind(builder.Configuration.GetSection("WheelDiverterConnectionOptions"))
                 .Validate(list => list is { Count: > 0 }, "配置无效：WheelDiverterConnectionOptions 不能为空")
                 .Validate(list => list.Select(x => x.DiverterId).Distinct().Count() == list.Count, "配置无效：DiverterId 必须唯一")
                 .ValidateOnStart();
 
             builder.Services.AddSingleton<List<IWheelDiverter>>(sp => {
-                var options = sp.GetRequiredService<IOptions<IReadOnlyList<WheelDiverterConnectionOptions>>>().Value;
+                var options = sp.GetRequiredService<IOptions<List<WheelDiverterConnectionOptions>>>().Value;
 
                 var ordered = options
                     .OrderBy(static x => x.DiverterId)
@@ -96,8 +97,12 @@ internal class Program {
             //上游路由连接服务
             builder.Services.AddHostedService<UpstreamRoutingHostedService>();
             //包裹服务
-            builder.Services.AddHostedService<UpstreamRoutingHostedService>();
+            builder.Services.AddHostedService<ParcelHostedService>();
+            //分拣编排服务
+            builder.Services.AddHostedService<SortingOrchestrationHostedService>();
             //站点服务
+
+            builder.Services.AddHostedService<PositionQueueHostedService>();
 
 #if !DEBUG
     builder.Services.AddWindowsService();

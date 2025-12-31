@@ -49,7 +49,7 @@ namespace WheelDiverterSorter.Ingress {
         public event EventHandler<SensorFaultedEventArgs>? Faulted;
 
         public DefaultSensor(
-            IOptions<IReadOnlyList<SensorOptions>> optionsInfos,
+            IOptions<List<SensorOptions>> optionsInfos,
             ILogger<DefaultSensor> logger,
             IEmcController emcController) {
             _optionsInfos = optionsInfos.Value ?? [];
