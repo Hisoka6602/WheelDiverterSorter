@@ -2,6 +2,7 @@
 using System.Net;
 using System.Linq;
 using System.Text;
+using System.Buffers;
 using System.Text.Json;
 using TouchSocket.Core;
 using TouchSocket.Sockets;
@@ -17,6 +18,7 @@ using WheelDiverterSorter.Core.Options;
 using System.Runtime.InteropServices.JavaScript;
 
 namespace WheelDiverterSorter.Ingress {
+
     public sealed class UpstreamRouting : IUpstreamRouting, IDisposable {
         private readonly ILogger<UpstreamRouting> _logger;
 
@@ -122,13 +124,14 @@ namespace WheelDiverterSorter.Ingress {
         }
 
         public ValueTask<bool> SendCreateParcelAsync(UpstreamCreateParcelRequest request, CancellationToken cancellationToken = default)
-            => SendJsonLineAsync(request, cancellationToken);
+            => SendTypedJsonLineAsync("ParcelDetected", request, cancellationToken);
 
         public ValueTask<bool> SendDropToChuteAsync(SortingCompletedMessage request, CancellationToken cancellationToken = default)
-            => SendJsonLineAsync(request, cancellationToken);
+            => SendTypedJsonLineAsync("SortingCompleted", request, cancellationToken);
 
+        // 该 Type 字符串必须与上游 switch 完全一致；若上游未实现该 case，则需要改为其实际约定值
         public ValueTask<bool> SendParcelExceptionAsync(ParcelExceptionMessage request, CancellationToken cancellationToken = default)
-            => SendJsonLineAsync(request, cancellationToken);
+            => SendTypedJsonLineAsync("ParcelException", request, cancellationToken);
 
         private async Task<bool> ConnectAsClientAsync(CancellationToken cancellationToken) {
             // 客户端模式：参考 DefaultDws 的思路，后台循环负责断线重连
@@ -390,15 +393,37 @@ namespace WheelDiverterSorter.Ingress {
             return Task.CompletedTask;
         }
 
-        private ValueTask<bool> SendJsonLineAsync<T>(T request, CancellationToken cancellationToken) {
+        private ValueTask<bool> SendTypedJsonLineAsync<T>(string type, T data, CancellationToken cancellationToken) {
             try {
                 if (!IsConnected) {
                     return ValueTask.FromResult(false);
                 }
 
-                var json = JsonSerializer.Serialize(request, _jsonOptions);
-                // 终止符分包：一条消息一行
-                var payload = Encoding.UTF8.GetBytes(json + "\n");
+                // 先把 data 按现有 _jsonOptions 序列化为 JsonElement，再把属性展开到根节点
+                var element = JsonSerializer.SerializeToElement(data, _jsonOptions);
+
+                var buffer = new ArrayBufferWriter<byte>(256);
+                using (var writer = new Utf8JsonWriter(buffer)) {
+                    writer.WriteStartObject();
+
+                    // 根节点 Type：上游 EnvelopeHead 依赖该字段
+                    writer.WriteString("Type", type);
+
+                    if (element.ValueKind == JsonValueKind.Object) {
+                        foreach (var prop in element.EnumerateObject()) {
+                            writer.WritePropertyName(prop.Name);
+                            prop.Value.WriteTo(writer);
+                        }
+                    }
+
+                    writer.WriteEndObject();
+                    writer.Flush();
+                }
+
+                // 追加 '\n'，与 TerminatorPackageAdapter("\n") 对齐
+                var payload = new byte[buffer.WrittenCount + 1];
+                buffer.WrittenSpan.CopyTo(payload);
+                payload[^1] = (byte)'\n';
 
                 return SendRawAsync(payload, cancellationToken);
             }

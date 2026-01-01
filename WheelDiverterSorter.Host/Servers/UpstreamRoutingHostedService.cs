@@ -4,7 +4,9 @@ using System.Text;
 using System.Threading.Tasks;
 using WheelDiverterSorter.Core;
 using System.Collections.Generic;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using WheelDiverterSorter.Core.Models;
 using WheelDiverterSorter.Core.Manager;
 using WheelDiverterSorter.Core.Options;
 
@@ -25,6 +27,22 @@ namespace WheelDiverterSorter.Host.Servers {
             _upstreamRoutingConnectionOptions = upstreamRoutingConnectionOptions;
             _upstreamRouting.Connected += async (sender, args) => {
                 Console.WriteLine("客户端连接成功");
+            };
+            _parcelManager.ParcelCreated += async (sender, args) => {
+                var sendCreateParcelAsync = await _upstreamRouting.SendCreateParcelAsync(new UpstreamCreateParcelRequest {
+                    ParcelId = args.ParcelId,
+                    DetectedAt = DateTimeOffset.Now
+                });
+                if (!sendCreateParcelAsync) {
+                    _logger.LogError($"包裹Id:{args.Parcel},发送上游失败");
+                }
+            };
+            _parcelManager.ParcelDropped += async (sender, args) => {
+                await _upstreamRouting.SendDropToChuteAsync(new SortingCompletedMessage {
+                    ParcelId = args.ParcelId,
+                    ActualChuteId = args.ActualChuteId,
+                    CompletedAt = DateTimeOffset.Now
+                });
             };
         }
 

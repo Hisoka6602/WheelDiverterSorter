@@ -15,6 +15,7 @@ namespace WheelDiverterSorter.Host.Servers {
     public class ParcelHostedService : BackgroundService {
         private readonly ILogger<IoLinkageHostedService> _logger;
         private readonly IOptions<List<SensorOptions>> _sensorOptions;
+        private readonly IOptions<List<PositionOptions>> _positionOptions;
         private readonly ISystemStateManager _systemStateManager;
         private readonly ISensorManager _sensorManager;
         private readonly IUpstreamRouting _upstreamRouting;
@@ -22,15 +23,16 @@ namespace WheelDiverterSorter.Host.Servers {
 
         public ParcelHostedService(ILogger<IoLinkageHostedService> logger,
             IOptions<List<SensorOptions>> sensorOptions,
+            IOptions<List<PositionOptions>> positionOptions,
             ISystemStateManager systemStateManager, IParcelManager parcelManager,
             ISensorManager sensorManager, IUpstreamRouting upstreamRouting) {
             _logger = logger;
             _sensorOptions = sensorOptions;
+            _positionOptions = positionOptions;
             _systemStateManager = systemStateManager;
             _sensorManager = sensorManager;
             _upstreamRouting = upstreamRouting;
             _sensorManager.SensorStateChanged += async (sender, args) => {
-                await Task.Yield();
                 if (args.SensorType == IoPointType.ParcelCreateSensor && args.NewState == _triggerState &&
                     _systemStateManager.CurrentState == SystemState.Running) {
                     //创建包裹
@@ -49,7 +51,15 @@ namespace WheelDiverterSorter.Host.Servers {
             _upstreamRouting.ChuteAssignedReceived += async (sender, info) => {
                 //更新包裹目标格口
                 await Task.Yield();
-                await parcelManager.AssignTargetChuteAsync(info.ParcelId, info.ChuteId, info.AssignedAt);
+                var any = _positionOptions.Value.Any(a => a.LeftChuteIds?.Any(l => l == info.ChuteId) == true ||
+                                                          a.RightChuteIds?.Any(r => r == info.ChuteId) == true);
+                if (any) {
+                    await parcelManager.AssignTargetChuteAsync(info.ParcelId, info.ChuteId, info.AssignedAt);
+                    _logger.LogInformation($"包裹Id:{info.ParcelId},已更新:{info.ChuteId}的线路");
+                }
+                else {
+                    _logger.LogWarning($"包裹Id:{info.ParcelId},未找到格口:{info.ChuteId}的线路");
+                }
             };
             parcelManager.ParcelDropped += async (sender, args) => {
                 await Task.Yield();

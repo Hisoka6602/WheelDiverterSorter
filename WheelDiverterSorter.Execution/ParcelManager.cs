@@ -162,7 +162,7 @@ namespace WheelDiverterSorter.Execution {
                         return new ValueTask<bool>(false);
                     }
 
-                    parcel.MarkDropped(actualChuteId, droppedAt.UtcDateTime);
+                    parcel.MarkDropped(actualChuteId, droppedAt.ToLocalTime().DateTime);
 
                     args = new ParcelDroppedEventArgs {
                         ParcelId = parcelId,

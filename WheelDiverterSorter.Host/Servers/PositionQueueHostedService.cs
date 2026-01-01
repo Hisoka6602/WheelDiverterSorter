@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using WheelDiverterSorter.Execution;
 using WheelDiverterSorter.Core.Enums;
+using System.Runtime.CompilerServices;
 using WheelDiverterSorter.Core.Events;
 using WheelDiverterSorter.Core.Models;
 using WheelDiverterSorter.Core.Manager;
@@ -45,6 +46,8 @@ namespace WheelDiverterSorter.Host.Servers {
         // 每个 positionIndex 一个 Actor
         private readonly ConcurrentDictionary<int, PositionActor> _actors = new();
 
+        private const string TimestampFormat = "yyyy-MM-dd HH:mm:ss:fff";
+
         public PositionQueueHostedService(
             ILogger<PositionQueueHostedService> logger,
             IOptions<List<ConveyorSegmentOptions>> conveyorSegmentOptions,
@@ -62,6 +65,15 @@ namespace WheelDiverterSorter.Host.Servers {
             _parcelManager = parcelManager;
             _positionQueueManager = positionQueueManager;
             _sensorManager = sensorManager;
+
+            // NOTE: 仅日志：保持同步，避免 async-void 事件处理器带来的并发重入/异常不可控
+            _parcelManager.ParcelCreated += (sender, args) => {
+                _logger.LogDebug($"包裹Id:{args.ParcelId},创建成功,时间:{args.CreatedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss.fff}");
+            };
+            _parcelManager.ParcelTargetChuteUpdated += (sender, args) => {
+                _logger.LogDebug(
+                    $"包裹Id:{args.ParcelId},更新目标格口为:{args.NewTargetChuteId},时间:{args.AssignedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss.fff}");
+            };
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
@@ -70,7 +82,9 @@ namespace WheelDiverterSorter.Host.Servers {
             foreach (var pos in _positionOptions.Value.OrderBy(o => o.PositionIndex)) {
                 var ok = await _positionQueueManager.CreatePositionAsync(pos.PositionIndex, stoppingToken).ConfigureAwait(false);
                 if (ok) {
-                    Log.PositionCreated(_logger, pos.PositionIndex, pos.FrontSensorId, (int)pos.DiverterId);
+                    _logger.LogInformation(new EventId(1001, "PositionCreated"),
+                        "位置队列已创建：PositionIndex={PositionIndex}, FrontSensorId={FrontSensorId}, DiverterId={DiverterId}",
+                        pos.PositionIndex, pos.FrontSensorId, (int)pos.DiverterId);
                 }
 
                 _ = GetOrCreateActor(pos.PositionIndex);
@@ -80,7 +94,7 @@ namespace WheelDiverterSorter.Host.Servers {
             BuildNextPositionMap();
 
             _sensorManager.SensorStateChanged += OnSensorStateChanged;
-            Log.Subscribed(_logger);
+            _logger.LogInformation(new EventId(1002, "Subscribed"), "已订阅传感器状态变更事件");
 
             try {
                 await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false);
@@ -89,7 +103,7 @@ namespace WheelDiverterSorter.Host.Servers {
             }
             finally {
                 _sensorManager.SensorStateChanged -= OnSensorStateChanged;
-                Log.Unsubscribed(_logger);
+                _logger.LogInformation(new EventId(1003, "Unsubscribed"), "已解除订阅传感器状态变更事件");
 
                 foreach (var actor in _actors.Values) {
                     actor.Stop("Host stopping");
@@ -153,6 +167,11 @@ namespace WheelDiverterSorter.Host.Servers {
             _nextPositionByIndex = map;
         }
 
+        private static string FormatTimestamp(DateTimeOffset value) => value.ToLocalTime().ToString(TimestampFormat);
+
+        private static string FormatTimestampMs(long unixMs)
+            => DateTimeOffset.FromUnixTimeMilliseconds(unixMs).ToLocalTime().ToString(TimestampFormat);
+
         private void OnSensorStateChanged(object? sender, SensorStateChangedEventArgs args) {
             if (args.SensorType != IoPointType.DiverterPositionSensor) {
                 return;
@@ -160,7 +179,9 @@ namespace WheelDiverterSorter.Host.Servers {
 
             // 不创建 async 状态机；直接投递到 position Actor
             if (!_positionByFrontSensorId.TryGetValue(args.Point, out var pos)) {
-                Log.SensorUnbound(_logger, args.Point, args.NewState, args.OccurredAtMs);
+                _logger.LogWarning(new EventId(2001, "SensorUnbound"),
+                    "传感器触发但未绑定位置：Point={Point}, NewState={NewState}, OccurredAt={OccurredAt}",
+                    args.Point, args.NewState, FormatTimestampMs(args.OccurredAtMs));
                 return;
             }
 
@@ -216,7 +237,7 @@ namespace WheelDiverterSorter.Host.Servers {
                 catch (OperationCanceledException) {
                 }
                 catch (Exception ex) {
-                    Log.ActorPumpFaulted(_owner._logger, _positionIndex, ex);
+                    _owner._logger.LogError(ex, "PositionActor Pump 异常：PositionIndex={PositionIndex}", _positionIndex);
                 }
             }
         }
@@ -225,29 +246,40 @@ namespace WheelDiverterSorter.Host.Servers {
 
         private async Task HandlePositionTriggerAsync(int positionIndex, SensorStateChangedEventArgs args) {
             try {
+                // 触发追踪号：同一次传感器触发在本服务内的贯穿标识（便于按 TraceId 串联日志）
+                // 选择 OccurredAtMs + Point：既稳定又无需引入全局计数器
+                var traceId = $"T{args.OccurredAtMs:X}-{args.Point:X}";
+
                 // 位置绑定（由 point -> pos 缓存，O(1)）
                 if (!_positionByFrontSensorId.TryGetValue(args.Point, out var pos) || pos.PositionIndex != positionIndex) {
-                    Log.SensorUnbound(_logger, args.Point, args.NewState, args.OccurredAtMs);
+                    _logger.LogWarning(new EventId(2001, "SensorUnbound"),
+                        "传感器触发但未绑定位置：TraceId={TraceId}, Point={Point}, NewState={NewState}, OccurredAt={OccurredAt}",
+                        traceId, args.Point, args.NewState, FormatTimestampMs(args.OccurredAtMs));
                     return;
                 }
 
                 if (!_sensorByPoint.TryGetValue(args.Point, out var sensorOpt)) {
-                    Log.SensorConfigMissing(_logger, args.Point, pos.PositionIndex, args.OccurredAtMs);
+                    _logger.LogWarning(new EventId(2002, "SensorConfigMissing"),
+                        "传感器配置缺失：TraceId={TraceId}, Point={Point}, PositionIndex={PositionIndex}, OccurredAt={OccurredAt}",
+                        traceId, args.Point, pos.PositionIndex, FormatTimestampMs(args.OccurredAtMs));
                     return;
                 }
 
                 if (sensorOpt.TriggerState != args.NewState) {
-                    Log.SensorStateMismatch(_logger, args.Point, pos.PositionIndex, sensorOpt.TriggerState, args.NewState);
+                    //Log.SensorStateMismatch(_logger, args.Point, pos.PositionIndex, sensorOpt.TriggerState, args.NewState);
                     return;
                 }
 
                 if (_parcelManager.Parcels.Count <= 0) {
-                    Log.NoParcels(_logger, pos.PositionIndex, args.Point, args.OccurredAtMs);
+                    _logger.LogWarning(new EventId(2004, "NoParcels"),
+                        "传感器触发但当前无包裹：TraceId={TraceId}, PositionIndex={PositionIndex}, Point={Point}, OccurredAt={OccurredAt}",
+                        traceId, pos.PositionIndex, args.Point, FormatTimestampMs(args.OccurredAtMs));
                     return;
                 }
 
                 var occurredMs = args.OccurredAtMs;
-                var occurredAt = DateTimeOffset.FromUnixTimeMilliseconds(occurredMs);
+                var occurredAt = DateTimeOffset.FromUnixTimeMilliseconds(occurredMs).ToLocalTime();
+                var occurredAtText = FormatTimestamp(occurredAt);
 
                 // 丢失成立后推进队头：最多 32 次保护
                 for (var loop = 0; loop < 32; loop++) {
@@ -257,51 +289,129 @@ namespace WheelDiverterSorter.Host.Servers {
                         reason: "SensorTriggered-PruneInvalidHead").ConfigureAwait(false);
 
                     if (!peekResult.HasTask) {
-                        Log.PeekEmptyOrLimit(_logger, pos.PositionIndex, args.Point, occurredMs, peekResult.PrunedCount, peekResult.IsPruneLimitReached);
+                        // NOTE: PositionQueuePeekResult 当前不提供 IsPruneLimitReached。
+                        _logger.LogWarning(new EventId(3001, "PeekEmptyOrLimit"),
+                            "传感器触发但队列为空或清理达到上限：TraceId={TraceId}, PositionIndex={PositionIndex}, Point={Point}, OccurredAt={OccurredAt}, PrunedCount={PrunedCount}, IsLimitReached={IsLimitReached}",
+                            traceId, pos.PositionIndex, args.Point, occurredAtText, peekResult.PrunedCount, peekResult.PrunedCount >= 64);
                         return;
                     }
 
                     var head = peekResult.Task;
-                    var earliestMs = head.EarliestDequeueAt.ToUnixTimeMilliseconds();
+                    var earliestLocal = head.EarliestDequeueAt.ToLocalTime();
+                    var latestLocal = head.LatestDequeueAt.ToLocalTime();
 
-                    if (occurredMs < earliestMs) {
-                        Log.EarlyTriggered(_logger, pos.PositionIndex, head.ParcelId, occurredMs, earliestMs, earliestMs - occurredMs);
+                    var earliestMs = earliestLocal.ToUnixTimeMilliseconds();
+                    var latestMs = latestLocal.ToUnixTimeMilliseconds();
+
+                    if (occurredAt < earliestLocal) {
+                        // 提前触发：必须输出日志（带本地时间）
+                        _logger.LogWarning(new EventId(3002, "EarlyTriggered"),
+                            "包裹提前触发：TraceId={TraceId}, PositionIndex={PositionIndex}, ParcelId={ParcelId}, OccurredAt={OccurredAt}, Earliest={Earliest}, DeltaMs={DeltaMs}",
+                            traceId, pos.PositionIndex, head.ParcelId, occurredAtText, FormatTimestamp(earliestLocal), earliestMs - occurredMs);
                         return;
+                    }
+                    if (occurredAt > latestLocal) {
+                        // 超时触发：必须输出日志（带本地时间）
+                        _logger.LogWarning(new EventId(3008, "TimeoutTriggered"),
+                            "包裹超时触发：TraceId={TraceId}, PositionIndex={PositionIndex}, ParcelId={ParcelId}, ArrivedAt={ArrivedAt}, EarliestDequeueAt={EarliestDequeueAt}, LatestDequeueAt={LatestDequeueAt}, DeltaMs={DeltaMs}",
+                            traceId, pos.PositionIndex, head.ParcelId, occurredAtText, FormatTimestamp(earliestLocal), FormatTimestamp(latestLocal), occurredMs - latestMs);
                     }
 
                     // 丢失判定：必须 LostDecisionAt
                     if (head.LostDecisionAt is not null) {
-                        var lostDecisionMs = head.LostDecisionAt.Value.ToUnixTimeMilliseconds();
-                        if (occurredMs > lostDecisionMs) {
-                            Log.LostConfirmed(_logger, pos.PositionIndex, head.ParcelId, occurredMs, lostDecisionMs);
+                        var lostDecisionLocal = head.LostDecisionAt.Value.ToLocalTime();
+                        if (occurredAt > lostDecisionLocal) {
+                            // 丢失成立：必须输出日志（带本地时间）
+                            _logger.LogError(new EventId(3003, "LostConfirmed"),
+                                "包裹丢失成立：TraceId={TraceId}, PositionIndex={PositionIndex}, ParcelId={ParcelId}, ArrivedAt={ArrivedAt}, EarliestDequeueAt={EarliestDequeueAt}, LatestDequeueAt={LatestDequeueAt}, LostDecisionAt={LostDecisionAt}",
+                                traceId, pos.PositionIndex, head.ParcelId, occurredAtText, FormatTimestamp(earliestLocal), FormatTimestamp(latestLocal), FormatTimestamp(lostDecisionLocal));
 
                             var dqOk = await _positionQueueManager.DequeueAsync(pos.PositionIndex, "LostConfirmed-DequeueHead").ConfigureAwait(false);
                             if (!dqOk) {
-                                Log.LostDequeueFailed(_logger, pos.PositionIndex, head.ParcelId);
+                                _logger.LogError(new EventId(3004, "LostDequeueFailed"),
+                                    "丢失分支出队失败：TraceId={TraceId}, PositionIndex={PositionIndex}, ParcelId={ParcelId}",
+                                    traceId, pos.PositionIndex, head.ParcelId);
                                 return;
                             }
 
                             var invalidated = await _positionQueueManager.InvalidateTasksAfterPositionAsync(
                                 pos.PositionIndex, head.ParcelId, "LostConfirmed-InvalidateAfter").ConfigureAwait(false);
 
-                            Log.InvalidateAfter(_logger, pos.PositionIndex, head.ParcelId, invalidated);
+                            _logger.LogWarning(new EventId(3005, "InvalidateAfter"),
+                                "已标记后续任务失效：TraceId={TraceId}, PositionIndex={PositionIndex}, ParcelId={ParcelId}, InvalidatedCount={InvalidatedCount}",
+                                traceId, pos.PositionIndex, head.ParcelId, invalidated);
 
                             // 用同一次触发继续尝试处理新队头
                             continue;
                         }
                     }
 
+                    // ---------- 防错位保护：传感器不携带 ParcelId，出队是不可逆的。
+                    // 修正：改为在丢失判定后、出队前才检查（避免因传感器波动导致的误判与保护失效）
+                    // 若下一站队列中尚不存在该 ParcelId 的任务，说明“当前队首推断”很可能错误（或编排滞后）。
+                    // 为避免把队列越带越歪，这里不执行 Dequeue，直接输出诊断并等待下一次触发。
+                    if (_nextPositionByIndex.TryGetValue(pos.PositionIndex, out var nextPositionIndex)) {
+                        var nextHasThisParcel = _positionQueueManager.GetTasksSnapshot(nextPositionIndex).Any(t => t.ParcelId == head.ParcelId);
+                        if (!nextHasThisParcel) {
+                            var nextHeadInfo = _positionQueueManager.TryPeekFirstTask(nextPositionIndex, out var nHead)
+                                ? $"NextHeadParcelId={nHead.ParcelId}"
+                                : "NextQueueEmpty";
+
+                            // 额外诊断：采样 next 队列前 N=5 个 ParcelId，帮助快速判断是否整体错位/是否缺任务
+                            var nextTop5 = _positionQueueManager.GetTasksSnapshot(nextPositionIndex)
+                                .Take(5)
+                                .Select(t => t.ParcelId)
+                                .ToArray();
+                            var nextTop5Text = nextTop5.Length == 0 ? "[]" : $"[{string.Join(',', nextTop5)}]";
+
+                            _logger.LogError(new EventId(7010, "DequeueGuardSkipped"),
+                                "出队保护：下一站未找到该任务，跳过出队以避免队列错位。TraceId={TraceId}, CurrentPositionIndex={CurrentPositionIndex}, NextPositionIndex={NextPositionIndex}, ParcelId={ParcelId}, OccurredAt={OccurredAt}, NextInfo={NextInfo}",
+                                traceId, pos.PositionIndex, nextPositionIndex, head.ParcelId, occurredAtText, $"{nextHeadInfo}, NextTop5={nextTop5Text}");
+                            return;
+                        }
+                    }
+
+                    // 出队依据（诊断）：当前站队首/队二窗口（Debug 级别，避免刷屏）
+                    var hasSecond = _positionQueueManager.TryPeekSecondTask(pos.PositionIndex, out var second);
+                    var secondText = hasSecond
+                        ? $"SecondParcelId={second.ParcelId}, SecondEarliest={FormatTimestamp(second.EarliestDequeueAt)}, SecondLatest={FormatTimestamp(second.LatestDequeueAt)}, SecondInvalidated={second.IsInvalidated}"
+                        : "Second=无";
+                    _logger.LogDebug(new EventId(8001, "DequeueBasis"),
+                        "准备出队（判定依据）：TraceId={TraceId}, PositionIndex={PositionIndex}, Point={Point}, OccurredAt={OccurredAt}, HeadParcelId={HeadParcelId}, HeadEarliest={HeadEarliest}, HeadLatest={HeadLatest}, HeadLostDecisionAt={HeadLostDecisionAt}, HeadInvalidated={HeadInvalidated}, {SecondText}",
+                        traceId,
+                        pos.PositionIndex,
+                        args.Point,
+                        occurredAtText,
+                         head.ParcelId,
+                         FormatTimestamp(earliestLocal),
+                         FormatTimestamp(latestLocal),
+                         head.LostDecisionAt is null ? "null" : FormatTimestamp(head.LostDecisionAt.Value),
+                         head.IsInvalidated,
+                         secondText);
+
                     // 命中当前队首：出队
                     var deqOk = await _positionQueueManager.DequeueAsync(pos.PositionIndex, "SensorMatched-DequeueHead").ConfigureAwait(false);
                     if (!deqOk) {
-                        Log.DequeueFailed(_logger, pos.PositionIndex, head.ParcelId);
+                        _logger.LogError(new EventId(3006, "DequeueFailed"),
+                            "出队失败：TraceId={TraceId}, PositionIndex={PositionIndex}, ParcelId={ParcelId}",
+                            traceId, pos.PositionIndex, head.ParcelId);
                         return;
                     }
+
+                    // 出队结果确认：出队后新的队首（用于确认是否发生“出队后队首异常跳变”)
+                    var afterHeadInfo = _positionQueueManager.TryPeekFirstTask(pos.PositionIndex, out var afterHead)
+                        ? $"NewHeadParcelId={afterHead.ParcelId}, NewHeadEarliest={FormatTimestamp(afterHead.EarliestDequeueAt)}, NewHeadLatest={FormatTimestamp(afterHead.LatestDequeueAt)}, NewHeadInvalidated={afterHead.IsInvalidated}"
+                        : "NewHead=队列空";
+                    _logger.LogInformation(new EventId(8002, "DequeueConfirmed"),
+                       "已完成出队：TraceId={TraceId}, PositionIndex={PositionIndex}, DequeuedParcelId={DequeuedParcelId}, OccurredAt={OccurredAt}, {AfterHeadInfo}",
+                       traceId, pos.PositionIndex, head.ParcelId, occurredAtText, afterHeadInfo);
 
                     // 取包裹信息
                     _parcelManager.TryGet(head.ParcelId, out var info);
                     if (info is null) {
-                        Log.ParcelInfoMissing(_logger, pos.PositionIndex, head.ParcelId, occurredMs);
+                        _logger.LogWarning(new EventId(3007, "ParcelInfoMissing"),
+                            "包裹信息不存在：TraceId={TraceId}, PositionIndex={PositionIndex}, ParcelId={ParcelId}, OccurredAt={OccurredAt}",
+                            traceId, pos.PositionIndex, head.ParcelId, occurredAtText);
                         return;
                     }
 
@@ -309,305 +419,152 @@ namespace WheelDiverterSorter.Host.Servers {
                     var prevStationId = info.CurrentStationId;
                     var prevArrivedAt = info.CurrentStationArrivedTime;
                     var actualTransitMs = 0;
-                    int? distanceMm = null;
+                    long? distanceMm = null;
                     if (prevStationId >= 0 && prevArrivedAt != default) {
-                        // 同源时间：prevArrivedAt 也是由 FromUnixTimeMilliseconds(...).DateTime 写入
-
-                        /*var delta = (long)(occurredAt.DateTime - prevArrivedAt).TotalMilliseconds;
+                        var delta = (long)(occurredAt.DateTime - prevArrivedAt).TotalMilliseconds;
                         if (delta > 0) {
                             actualTransitMs = delta > int.MaxValue ? int.MaxValue : (int)delta;
-                        }*/
+                        }
 
-                        distanceMm = (int?)occurredAt.ToLocalTime().DateTime.Subtract(prevArrivedAt).TotalMilliseconds;
+                        distanceMm = actualTransitMs;
                     }
 
-                    /*if (prevStationId is >= 0 and <= int.MaxValue) {
-                        var prevIndex = (int)prevStationId;
-                        if (_positionByIndex.TryGetValue(prevIndex, out var prevPos) &&
-                            _segmentById.TryGetValue(prevPos.SegmentId, out var prevSeg)) {
-                            distanceMm = (int?)prevSeg.LengthMm;
-                        }
-                    }*/
-
                     //两站统计
-                    Log.TransitStats(_logger, info.ParcelId, prevStationId, pos.PositionIndex, actualTransitMs, distanceMm, occurredMs);
+                    _logger.LogInformation(new EventId(4001, "TransitStats"),
+                        "两站统计：TraceId={TraceId}, ParcelId={ParcelId}, FromStationId={FromStationId}, ToStationId={ToStationId}, ActualTransitTimeMs={ActualTransitTimeMs}, DistanceMm={DistanceMm}, OccurredAt={OccurredAt}",
+                        traceId, info.ParcelId, prevStationId, pos.PositionIndex, actualTransitMs, distanceMm, occurredAtText);
 
                     // 再更新到站（内部会前移上一站信息并计算 TransitTimeMs）
                     info.ArriveAtStation(pos.PositionIndex, occurredAt.DateTime);
 
-                    Log.Arrived(_logger, pos.PositionIndex, head.ParcelId, occurredMs, head.Action, head.TargetChuteId);
+                    _logger.LogInformation(new EventId(4002, "Arrived"),
+                        "包裹到达：TraceId={TraceId}, PositionIndex={PositionIndex}, ParcelId={ParcelId}, OccurredAt={OccurredAt}, Action={Action}, TargetChuteId={TargetChuteId}",
+                        traceId, pos.PositionIndex, head.ParcelId, occurredAtText, head.Action, head.TargetChuteId);
 
                     // 更新下一站窗口（O(1) next）
-                    await TryUpdateNextPositionWindowAsync(pos.PositionIndex, pos.SegmentId, head.ParcelId, occurredAt).ConfigureAwait(false);
+                    var updated = await TryUpdateNextPositionWindowAsync(pos.PositionIndex, head.ParcelId, occurredAt, traceId).ConfigureAwait(false);
+                    if (!updated) {
+                        // 仅使用当前文件中已存在且确认可编译的日志写法（避免触发 LoggerMessage 委托签名冲突）
+                        _logger.LogError(new EventId(9106, "NextWindow.UpdateFailed"),
+                            "NextWindow 更新失败：TraceId={TraceId}, Current={CurrentPositionIndex}, ParcelId={ParcelId}",
+                            traceId, pos.PositionIndex, head.ParcelId);
+                    }
 
                     // 执行动作 + 落格（落格时间使用 occurredAt）
                     await ExecuteDiverterActionAsync(pos.PositionIndex, (int)pos.DiverterId, head, info, occurredAt).ConfigureAwait(false);
                     return;
                 }
 
-                Log.LoopGuard(_logger, pos.PositionIndex, args.Point, args.OccurredAtMs);
+                _logger.LogError(new EventId(7001, "LoopGuard"),
+                    "循环保护触发：TraceId={TraceId}, PositionIndex={PositionIndex}, Point={Point}, OccurredAt={OccurredAt}",
+                    traceId, pos.PositionIndex, args.Point, FormatTimestampMs(args.OccurredAtMs));
             }
             catch (Exception ex) {
-                Log.TriggerFaulted(_logger, args.Point, args.OccurredAtMs, ex);
+                _logger.LogError(ex, "处理传感器触发异常：Point={Point}, OccurredAt={OccurredAt}",
+                    args.Point, FormatTimestampMs(args.OccurredAtMs));
             }
         }
 
-        private async ValueTask TryUpdateNextPositionWindowAsync(int currentPositionIndex, long segmentId, long parcelId, DateTimeOffset currentOccurredAt) {
+        private async ValueTask<bool> TryUpdateNextPositionWindowAsync(int currentPositionIndex, long parcelId, DateTimeOffset currentOccurredAt, string traceId) {
             if (!_nextPositionByIndex.TryGetValue(currentPositionIndex, out var nextPositionIndex)) {
-                Log.LastStationNoNext(_logger, currentPositionIndex, parcelId);
-                return;
+                _logger.LogDebug(new EventId(9200, "NextWindow.NoNext"),
+                    "NextWindow 无下一站：TraceId={TraceId}, Current={CurrentPositionIndex}, ParcelId={ParcelId}",
+                    traceId, currentPositionIndex, parcelId);
+                return false;
             }
 
+            if (!_positionByIndex.TryGetValue(nextPositionIndex, out var nextPosOpt)) {
+                _logger.LogWarning(new EventId(9201, "NextWindow.NextPositionMissing"),
+                    "NextWindow 下一站配置缺失：TraceId={TraceId}, Current={CurrentPositionIndex}, Next={NextPositionIndex}, ParcelId={ParcelId}",
+                    traceId, currentPositionIndex, nextPositionIndex, parcelId);
+                return false;
+            }
+
+            var segmentId = nextPosOpt.SegmentId;
             if (!_segmentById.TryGetValue(segmentId, out var seg)) {
-                Log.SegmentMissing(_logger, currentPositionIndex, nextPositionIndex, segmentId, parcelId);
-                return;
+                _logger.LogWarning(new EventId(9202, "NextWindow.SegmentMissing"),
+                    "NextWindow Segment 配置缺失：TraceId={TraceId}, Current={CurrentPositionIndex}, Next={NextPositionIndex}, SegmentId={SegmentId}, ParcelId={ParcelId}",
+                    traceId, currentPositionIndex, nextPositionIndex, segmentId, parcelId);
+                return false;
             }
 
-            var transitMs = _segmentTransitMsById.TryGetValue(segmentId, out var ms) ? ms : 0;
-            if (transitMs <= 0) {
-                Log.SegmentSpeedInvalid(_logger, seg.SegmentId, seg.SpeedMmps);
-                return;
+            if (!_segmentTransitMsById.TryGetValue(segmentId, out var transitMs) || transitMs <= 0) {
+                _logger.LogWarning(new EventId(9203, "NextWindow.TransitMsInvalid"),
+                    "NextWindow TransitMs 无效：TraceId={TraceId}, Current={CurrentPositionIndex}, Next={NextPositionIndex}, SegmentId={SegmentId}, SpeedMmps={SpeedMmps}, LengthMm={LengthMm}, TransitMs={TransitMs}, ToleranceMs={ToleranceMs}, ParcelId={ParcelId}",
+                    traceId, currentPositionIndex, nextPositionIndex, segmentId, seg.SpeedMmps, seg.LengthMm, transitMs, seg.TimeToleranceMs, parcelId);
+                return false;
             }
 
             var earliest = currentOccurredAt.AddMilliseconds(transitMs - seg.TimeToleranceMs);
             var latest = currentOccurredAt.AddMilliseconds(transitMs + seg.TimeToleranceMs);
 
+            // 额外诊断：next 队列信息
+            var nextSnapshot = _positionQueueManager.GetTasksSnapshot(nextPositionIndex);
+            var nextTop5 = nextSnapshot.Take(5).Select(t => t.ParcelId).ToArray();
+            var nextTop5Text = nextTop5.Length == 0 ? "[]" : $"[{string.Join(',', nextTop5)}]";
+
             var ok = await _positionQueueManager.UpdateTaskAsync(new PositionQueueTaskPatch {
                 PositionIndex = nextPositionIndex,
                 ParcelId = parcelId,
-                UpdateMask = PositionQueueTaskUpdateMask.EarliestDequeueAt | PositionQueueTaskUpdateMask.LatestDequeueAt,
+                UpdateMask = (PositionQueueTaskUpdateMask.EarliestDequeueAt | PositionQueueTaskUpdateMask.LatestDequeueAt),
                 EarliestDequeueAt = earliest,
                 LatestDequeueAt = latest
-            }, reason: "Arrived-UpdateNextWindow").ConfigureAwait(false);
+            }, "Arrived-UpdateNextWindow").ConfigureAwait(false);
 
-            if (ok) {
-                Log.NextWindowUpdated(_logger, currentPositionIndex, nextPositionIndex, parcelId, transitMs, earliest, latest);
+            if (!ok) {
+                var nextHeadId = _positionQueueManager.TryPeekFirstTask(nextPositionIndex, out var headAny) ? headAny.ParcelId : -1;
+                _logger.LogError(new EventId(9204, "NextWindow.UpdateTaskFailed"),
+                    "NextWindow UpdateTaskAsync 失败：TraceId={TraceId}, Current={CurrentPositionIndex}, Next={NextPositionIndex}, ParcelId={ParcelId}, NextQueueCount={NextQueueCount}, NextHeadParcelId={NextHeadParcelId}, NextTop5={NextTop5}, Earliest={Earliest}, Latest={Latest}",
+                    traceId, currentPositionIndex, nextPositionIndex, parcelId, nextSnapshot.Count, nextHeadId, nextTop5Text, FormatTimestamp(earliest), FormatTimestamp(latest));
+                return false;
             }
-            else {
-                Log.NextWindowUpdateFailed(_logger, currentPositionIndex, nextPositionIndex, parcelId);
-            }
+
+            _logger.LogDebug(new EventId(9205, "NextWindow.Updated"),
+                "NextWindow 已更新：TraceId={TraceId}, Current={CurrentPositionIndex}, Next={NextPositionIndex}, ParcelId={ParcelId}, TransitMs={TransitMs}, Earliest={Earliest}, Latest={Latest}",
+                traceId, currentPositionIndex, nextPositionIndex, parcelId, transitMs, FormatTimestamp(earliest), FormatTimestamp(latest));
+            return true;
         }
 
         private async ValueTask ExecuteDiverterActionAsync(int positionIndex, int diverterId, PositionQueueTask head, ParcelInfo info, DateTimeOffset occurredAt) {
             if (!_diverterById.TryGetValue(diverterId, out var diverter)) {
-                Log.DiverterMissing(_logger, positionIndex, diverterId, head.ParcelId);
+                _logger.LogError(new EventId(9300, "DiverterMissing"),
+                    "摆轮缺失：PositionIndex={PositionIndex}, DiverterId={DiverterId}, ParcelId={ParcelId}",
+                    positionIndex, diverterId, head.ParcelId);
                 return;
             }
-
-            var chuteId = info.TargetChuteId;
-
+            long chuteId = info.TargetChuteId;
             if (head.Action == Direction.Left) {
-                Log.DiverterActionLeft(_logger, positionIndex, diverterId, head.ParcelId, occurredAt.ToUnixTimeMilliseconds());
-                await diverter.TurnLeftAsync().ConfigureAwait(false);
-                await _parcelManager.MarkDroppedAsync(head.ParcelId, chuteId, occurredAt).ConfigureAwait(false);
-                Log.Dropped(_logger, head.ParcelId, chuteId, occurredAt);
+                _logger.LogInformation(new EventId(9301, "DiverterActionLeft"),
+                    "摆轮左转：PositionIndex={PositionIndex}, DiverterId={DiverterId}, ParcelId={ParcelId}, OccurredAt={OccurredAt}",
+                    positionIndex, diverterId, head.ParcelId, FormatTimestamp(occurredAt));
+                await diverter.TurnLeftAsync().ConfigureAwait(continueOnCapturedContext: false);
+                await _parcelManager.MarkDroppedAsync(head.ParcelId, chuteId, occurredAt).ConfigureAwait(continueOnCapturedContext: false);
+                _logger.LogInformation(new EventId(9304, "Dropped"),
+                    "包裹落格：ParcelId={ParcelId}, ChuteId={ChuteId}, DroppedAt={DroppedAt}",
+                    head.ParcelId, chuteId, FormatTimestamp(occurredAt));
                 return;
             }
-
             if (head.Action == Direction.Right) {
-                Log.DiverterActionRight(_logger, positionIndex, diverterId, head.ParcelId, occurredAt.ToUnixTimeMilliseconds());
-                await diverter.TurnRightAsync().ConfigureAwait(false);
-                await _parcelManager.MarkDroppedAsync(head.ParcelId, chuteId, occurredAt).ConfigureAwait(false);
-                Log.Dropped(_logger, head.ParcelId, chuteId, occurredAt);
+                _logger.LogInformation(new EventId(9302, "DiverterActionRight"),
+                    "摆轮右转：PositionIndex={PositionIndex}, DiverterId={DiverterId}, ParcelId={ParcelId}, OccurredAt={OccurredAt}",
+                    positionIndex, diverterId, head.ParcelId, FormatTimestamp(occurredAt));
+                await diverter.TurnRightAsync().ConfigureAwait(continueOnCapturedContext: false);
+                await _parcelManager.MarkDroppedAsync(head.ParcelId, chuteId, occurredAt).ConfigureAwait(continueOnCapturedContext: false);
+                _logger.LogInformation(new EventId(9304, "Dropped"),
+                    "包裹落格：ParcelId={ParcelId}, ChuteId={ChuteId}, DroppedAt={DroppedAt}",
+                    head.ParcelId, chuteId, FormatTimestamp(occurredAt));
                 return;
             }
-
-            Log.DiverterActionStraight(_logger, positionIndex, diverterId, head.ParcelId, occurredAt.ToUnixTimeMilliseconds());
-            await diverter.StraightThroughAsync().ConfigureAwait(false);
-
+            _logger.LogInformation(new EventId(9303, "DiverterActionStraight"),
+                "摆轮直通：PositionIndex={PositionIndex}, DiverterId={DiverterId}, ParcelId={ParcelId}, OccurredAt={OccurredAt}",
+                positionIndex, diverterId, head.ParcelId, FormatTimestamp(occurredAt));
+            await diverter.StraightThroughAsync().ConfigureAwait(continueOnCapturedContext: false);
             if (diverterId == _lastDiverterId) {
-                await _parcelManager.MarkDroppedAsync(head.ParcelId, 999, occurredAt).ConfigureAwait(false);
-                Log.DroppedEnd(_logger, head.ParcelId, 999, occurredAt);
+                await _parcelManager.MarkDroppedAsync(head.ParcelId, 999L, occurredAt).ConfigureAwait(continueOnCapturedContext: false);
+                _logger.LogInformation(new EventId(9305, "DroppedEnd"),
+                    "包裹终点落格：ParcelId={ParcelId}, ChuteId={ChuteId}, DroppedAt={DroppedAt}",
+                    head.ParcelId, 999L, FormatTimestamp(occurredAt));
             }
-        }
-
-        // ---------------- LoggerMessage（高频优化） ----------------
-
-        private static class Log {
-
-            private static readonly Action<ILogger, int, long, int, Exception?> _positionCreated =
-                LoggerMessage.Define<int, long, int>(LogLevel.Information, new EventId(1001, "PositionCreated"),
-                    "位置队列已创建：PositionIndex={PositionIndex}, FrontSensorId={FrontSensorId}, DiverterId={DiverterId}");
-
-            private static readonly Action<ILogger, Exception?> _subscribed =
-                LoggerMessage.Define(LogLevel.Information, new EventId(1002, "Subscribed"),
-                    "已订阅传感器状态变更事件");
-
-            private static readonly Action<ILogger, Exception?> _unsubscribed =
-                LoggerMessage.Define(LogLevel.Information, new EventId(1003, "Unsubscribed"),
-                    "已解除订阅传感器状态变更事件");
-
-            private static readonly Action<ILogger, int, IoState, long, Exception?> _sensorUnbound =
-                LoggerMessage.Define<int, IoState, long>(LogLevel.Warning, new EventId(2001, "SensorUnbound"),
-                    "传感器触发但未绑定位置：Point={Point}, NewState={NewState}, OccurredAtMs={OccurredAtMs}");
-
-            private static readonly Action<ILogger, int, int, long, Exception?> _sensorConfigMissing =
-                LoggerMessage.Define<int, int, long>(LogLevel.Warning, new EventId(2002, "SensorConfigMissing"),
-                    "传感器配置缺失：Point={Point}, PositionIndex={PositionIndex}, OccurredAtMs={OccurredAtMs}");
-
-            private static readonly Action<ILogger, int, int, IoState, IoState, Exception?> _sensorStateMismatch =
-                LoggerMessage.Define<int, int, IoState, IoState>(LogLevel.Debug, new EventId(2003, "SensorStateMismatch"),
-                    "传感器电平不满足触发条件：Point={Point}, PositionIndex={PositionIndex}, TriggerState={TriggerState}, NewState={NewState}");
-
-            private static readonly Action<ILogger, int, int, long, Exception?> _noParcels =
-                LoggerMessage.Define<int, int, long>(LogLevel.Warning, new EventId(2004, "NoParcels"),
-                    "传感器触发但当前无包裹：PositionIndex={PositionIndex}, Point={Point}, OccurredAtMs={OccurredAtMs}");
-
-            private static readonly Action<ILogger, int, int, long, int, bool, Exception?> _peekEmptyOrLimit =
-                LoggerMessage.Define<int, int, long, int, bool>(LogLevel.Warning, new EventId(3001, "PeekEmptyOrLimit"),
-                    "传感器触发但队列为空或清理达到上限：PositionIndex={PositionIndex}, Point={Point}, OccurredAtMs={OccurredAtMs}, PrunedCount={PrunedCount}, IsLimitReached={IsLimitReached}");
-
-            private static readonly Action<ILogger, int, long, long, long, long, Exception?> _earlyTriggered =
-                LoggerMessage.Define<int, long, long, long, long>(LogLevel.Warning, new EventId(3002, "EarlyTriggered"),
-                    "包裹提前触发：PositionIndex={PositionIndex}, ParcelId={ParcelId}, OccurredAtMs={OccurredAtMs}, EarliestMs={EarliestMs}, DeltaMs={DeltaMs}");
-
-            private static readonly Action<ILogger, int, long, long, long, Exception?> _lostConfirmed =
-                LoggerMessage.Define<int, long, long, long>(LogLevel.Error, new EventId(3003, "LostConfirmed"),
-                    "包裹丢失成立：PositionIndex={PositionIndex}, ParcelId={ParcelId}, OccurredAtMs={OccurredAtMs}, LostDecisionMs={LostDecisionMs}");
-
-            private static readonly Action<ILogger, int, long, Exception?> _lostDequeueFailed =
-                LoggerMessage.Define<int, long>(LogLevel.Error, new EventId(3004, "LostDequeueFailed"),
-                    "丢失分支出队失败：PositionIndex={PositionIndex}, ParcelId={ParcelId}");
-
-            private static readonly Action<ILogger, int, long, int, Exception?> _invalidateAfter =
-                LoggerMessage.Define<int, long, int>(LogLevel.Warning, new EventId(3005, "InvalidateAfter"),
-                    "已标记后续任务失效：PositionIndex={PositionIndex}, ParcelId={ParcelId}, InvalidatedCount={InvalidatedCount}");
-
-            private static readonly Action<ILogger, int, long, Exception?> _dequeueFailed =
-                LoggerMessage.Define<int, long>(LogLevel.Error, new EventId(3006, "DequeueFailed"),
-                    "出队失败：PositionIndex={PositionIndex}, ParcelId={ParcelId}");
-
-            private static readonly Action<ILogger, int, long, long, Exception?> _parcelInfoMissing =
-                LoggerMessage.Define<int, long, long>(LogLevel.Warning, new EventId(3007, "ParcelInfoMissing"),
-                    "包裹信息不存在：PositionIndex={PositionIndex}, ParcelId={ParcelId}, OccurredAtMs={OccurredAtMs}");
-
-            private static readonly Action<ILogger, long, long, int, int, int?, long, Exception?> _transitStats =
-                LoggerMessage.Define<long, long, int, int, int?, long>(LogLevel.Information, new EventId(4001, "TransitStats"),
-                    "两站统计：ParcelId={ParcelId}, FromStationId={FromStationId}, ToStationId={ToStationId}, ActualTransitTimeMs={ActualTransitTimeMs}, DistanceMm={DistanceMm}, OccurredAtMs={OccurredAtMs}");
-
-            private static readonly Action<ILogger, int, long, long, Direction, long?, Exception?> _arrived =
-                LoggerMessage.Define<int, long, long, Direction, long?>(LogLevel.Information, new EventId(4002, "Arrived"),
-                    "包裹到达：PositionIndex={PositionIndex}, ParcelId={ParcelId}, OccurredAtMs={OccurredAtMs}, Action={Action}, TargetChuteId={TargetChuteId}");
-
-            private static readonly Action<ILogger, int, long, Exception?> _lastStationNoNext =
-                LoggerMessage.Define<int, long>(LogLevel.Debug, new EventId(5001, "LastStationNoNext"),
-                    "最后一站无需更新下一站窗口：PositionIndex={PositionIndex}, ParcelId={ParcelId}");
-
-            private static readonly Action<ILogger, int, int, long, long, Exception?> _segmentMissing =
-                LoggerMessage.Define<int, int, long, long>(LogLevel.Warning, new EventId(5002, "SegmentMissing"),
-                    "线段配置缺失，无法更新下一站窗口：PositionIndex={PositionIndex}, NextPositionIndex={NextPositionIndex}, SegmentId={SegmentId}, ParcelId={ParcelId}");
-
-            private static readonly Action<ILogger, long, int, Exception?> _segmentSpeedInvalid =
-                LoggerMessage.Define<long, int>(LogLevel.Error, new EventId(5003, "SegmentSpeedInvalid"),
-                    "线段速度无效：SegmentId={SegmentId}, SpeedMmps={SpeedMmps}");
-
-            private static readonly Action<ILogger, int, int, long, int, DateTimeOffset, DateTimeOffset, Exception?> _nextWindowUpdated =
-                LoggerMessage.Define<int, int, long, int, DateTimeOffset, DateTimeOffset>(LogLevel.Information, new EventId(5004, "NextWindowUpdated"),
-                    "已更新下一站窗口：CurrentPositionIndex={CurrentPositionIndex}, NextPositionIndex={NextPositionIndex}, ParcelId={ParcelId}, TransitMs={TransitMs}, Earliest={Earliest}, Latest={Latest}");
-
-            private static readonly Action<ILogger, int, int, long, Exception?> _nextWindowUpdateFailed =
-                LoggerMessage.Define<int, int, long>(LogLevel.Warning, new EventId(5005, "NextWindowUpdateFailed"),
-                    "更新下一站窗口失败：CurrentPositionIndex={CurrentPositionIndex}, NextPositionIndex={NextPositionIndex}, ParcelId={ParcelId}");
-
-            private static readonly Action<ILogger, int, int, long, Exception?> _diverterMissing =
-                LoggerMessage.Define<int, int, long>(LogLevel.Error, new EventId(6001, "DiverterMissing"),
-                    "摆轮设备未找到：PositionIndex={PositionIndex}, DiverterId={DiverterId}, ParcelId={ParcelId}");
-
-            private static readonly Action<ILogger, int, int, long, long, Exception?> _diverterActionLeft =
-                LoggerMessage.Define<int, int, long, long>(LogLevel.Information, new EventId(6002, "DiverterActionLeft"),
-                    "执行摆轮动作：TurnLeft，PositionIndex={PositionIndex}, DiverterId={DiverterId}, ParcelId={ParcelId}, OccurredAtMs={OccurredAtMs}");
-
-            private static readonly Action<ILogger, int, int, long, long, Exception?> _diverterActionRight =
-                LoggerMessage.Define<int, int, long, long>(LogLevel.Information, new EventId(6003, "DiverterActionRight"),
-                    "执行摆轮动作：TurnRight，PositionIndex={PositionIndex}, DiverterId={DiverterId}, ParcelId={ParcelId}, OccurredAtMs={OccurredAtMs}");
-
-            private static readonly Action<ILogger, int, int, long, long, Exception?> _diverterActionStraight =
-                LoggerMessage.Define<int, int, long, long>(LogLevel.Debug, new EventId(6004, "DiverterActionStraight"),
-                    "执行摆轮动作：StraightThrough，PositionIndex={PositionIndex}, DiverterId={DiverterId}, ParcelId={ParcelId}, OccurredAtMs={OccurredAtMs}");
-
-            private static readonly Action<ILogger, long, long, DateTimeOffset, Exception?> _dropped =
-                LoggerMessage.Define<long, long, DateTimeOffset>(LogLevel.Information, new EventId(6005, "Dropped"),
-                    "落格完成：ParcelId={ParcelId}, ChuteId={ChuteId}, DroppedAt={DroppedAt}");
-
-            private static readonly Action<ILogger, long, long, DateTimeOffset, Exception?> _droppedEnd =
-                LoggerMessage.Define<long, long, DateTimeOffset>(LogLevel.Information, new EventId(6006, "DroppedEnd"),
-                    "末端默认落格完成：ParcelId={ParcelId}, ChuteId={ChuteId}, DroppedAt={DroppedAt}");
-
-            private static readonly Action<ILogger, int, int, long, Exception?> _loopGuard =
-                LoggerMessage.Define<int, int, long>(LogLevel.Error, new EventId(7001, "LoopGuard"),
-                    "循环保护触发：PositionIndex={PositionIndex}, Point={Point}, OccurredAtMs={OccurredAtMs}");
-
-            private static readonly Action<ILogger, int, Exception?> _actorPumpFaulted =
-                LoggerMessage.Define<int>(LogLevel.Error, new EventId(7002, "ActorPumpFaulted"),
-                    "PositionActor Pump 异常：PositionIndex={PositionIndex}");
-
-            private static readonly Action<ILogger, int, long, Exception?> _triggerFaulted =
-                LoggerMessage.Define<int, long>(LogLevel.Error, new EventId(7003, "TriggerFaulted"),
-                    "处理传感器触发异常：Point={Point}, OccurredAtMs={OccurredAtMs}");
-
-            public static void PositionCreated(ILogger logger, int positionIndex, long frontSensorId, int diverterId) => _positionCreated(logger, positionIndex, frontSensorId, diverterId, null);
-
-            public static void Subscribed(ILogger logger) => _subscribed(logger, null);
-
-            public static void Unsubscribed(ILogger logger) => _unsubscribed(logger, null);
-
-            public static void SensorUnbound(ILogger logger, int point, IoState newState, long occurredAtMs) => _sensorUnbound(logger, point, newState, occurredAtMs, null);
-
-            public static void SensorConfigMissing(ILogger logger, int point, int positionIndex, long occurredAtMs) => _sensorConfigMissing(logger, point, positionIndex, occurredAtMs, null);
-
-            public static void SensorStateMismatch(ILogger logger, int point, int positionIndex, IoState trigger, IoState newState) => _sensorStateMismatch(logger, point, positionIndex, trigger, newState, null);
-
-            public static void NoParcels(ILogger logger, int positionIndex, int point, long occurredAtMs) => _noParcels(logger, positionIndex, point, occurredAtMs, null);
-
-            public static void PeekEmptyOrLimit(ILogger logger, int positionIndex, int point, long occurredAtMs, int prunedCount, bool isLimitReached) => _peekEmptyOrLimit(logger, positionIndex, point, occurredAtMs, prunedCount, isLimitReached, null);
-
-            public static void EarlyTriggered(ILogger logger, int positionIndex, long parcelId, long occurredAtMs, long earliestMs, long deltaMs) => _earlyTriggered(logger, positionIndex, parcelId, occurredAtMs, earliestMs, deltaMs, null);
-
-            public static void LostConfirmed(ILogger logger, int positionIndex, long parcelId, long occurredAtMs, long lostDecisionMs) => _lostConfirmed(logger, positionIndex, parcelId, occurredAtMs, lostDecisionMs, null);
-
-            public static void LostDequeueFailed(ILogger logger, int positionIndex, long parcelId) => _lostDequeueFailed(logger, positionIndex, parcelId, null);
-
-            public static void InvalidateAfter(ILogger logger, int positionIndex, long parcelId, int invalidated) => _invalidateAfter(logger, positionIndex, parcelId, invalidated, null);
-
-            public static void DequeueFailed(ILogger logger, int positionIndex, long parcelId) => _dequeueFailed(logger, positionIndex, parcelId, null);
-
-            public static void ParcelInfoMissing(ILogger logger, int positionIndex, long parcelId, long occurredAtMs) => _parcelInfoMissing(logger, positionIndex, parcelId, occurredAtMs, null);
-
-            public static void TransitStats(ILogger logger, long parcelId, long fromStationId, int toStationId, int actualTransitMs, int? distanceMm, long occurredAtMs)
-                => _transitStats(logger, parcelId, fromStationId, toStationId, actualTransitMs, distanceMm, occurredAtMs, null);
-
-            public static void Arrived(ILogger logger, int positionIndex, long parcelId, long occurredAtMs, Direction action, long? targetChuteId)
-                => _arrived(logger, positionIndex, parcelId, occurredAtMs, action, targetChuteId, null);
-
-            public static void LastStationNoNext(ILogger logger, int positionIndex, long parcelId) => _lastStationNoNext(logger, positionIndex, parcelId, null);
-
-            public static void SegmentMissing(ILogger logger, int positionIndex, int nextPositionIndex, long segmentId, long parcelId) => _segmentMissing(logger, positionIndex, nextPositionIndex, segmentId, parcelId, null);
-
-            public static void SegmentSpeedInvalid(ILogger logger, long segmentId, int speedMmps) => _segmentSpeedInvalid(logger, segmentId, speedMmps, null);
-
-            public static void NextWindowUpdated(ILogger logger, int currentPositionIndex, int nextPositionIndex, long parcelId, int transitMs, DateTimeOffset earliest, DateTimeOffset latest)
-                => _nextWindowUpdated(logger, currentPositionIndex, nextPositionIndex, parcelId, transitMs, earliest, latest, null);
-
-            public static void NextWindowUpdateFailed(ILogger logger, int currentPositionIndex, int nextPositionIndex, long parcelId)
-                => _nextWindowUpdateFailed(logger, currentPositionIndex, nextPositionIndex, parcelId, null);
-
-            public static void DiverterMissing(ILogger logger, int positionIndex, int diverterId, long parcelId) => _diverterMissing(logger, positionIndex, diverterId, parcelId, null);
-
-            public static void DiverterActionLeft(ILogger logger, int positionIndex, int diverterId, long parcelId, long occurredAtMs) => _diverterActionLeft(logger, positionIndex, diverterId, parcelId, occurredAtMs, null);
-
-            public static void DiverterActionRight(ILogger logger, int positionIndex, int diverterId, long parcelId, long occurredAtMs) => _diverterActionRight(logger, positionIndex, diverterId, parcelId, occurredAtMs, null);
-
-            public static void DiverterActionStraight(ILogger logger, int positionIndex, int diverterId, long parcelId, long occurredAtMs) => _diverterActionStraight(logger, positionIndex, diverterId, parcelId, occurredAtMs, null);
-
-            public static void Dropped(ILogger logger, long parcelId, long chuteId, DateTimeOffset droppedAt) => _dropped(logger, parcelId, chuteId, droppedAt, null);
-
-            public static void DroppedEnd(ILogger logger, long parcelId, long chuteId, DateTimeOffset droppedAt) => _droppedEnd(logger, parcelId, chuteId, droppedAt, null);
-
-            public static void LoopGuard(ILogger logger, int positionIndex, int point, long occurredAtMs) => _loopGuard(logger, positionIndex, point, occurredAtMs, null);
-
-            public static void ActorPumpFaulted(ILogger logger, int positionIndex, Exception ex) => _actorPumpFaulted(logger, positionIndex, ex);
-
-            public static void TriggerFaulted(ILogger logger, int point, long occurredAtMs, Exception ex) => _triggerFaulted(logger, point, occurredAtMs, ex);
         }
     }
 }
