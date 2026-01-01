@@ -545,16 +545,31 @@ namespace WheelDiverterSorter.Execution {
 
             private bool HandlePatchUpdate(in PositionQueueTaskPatch patch, TaskCompletionSource<bool>? tcs) {
                 if (!patch.IsValid) {
+                    _owner.PublishFaulted(
+                        new InvalidOperationException($"PatchInvalid:PositionIndex={_positionIndex}, ParcelId={patch.ParcelId}, Mask={patch.UpdateMask}"),
+                        "PatchUpdate rejected: patch.IsValid == false",
+                        _positionIndex,
+                        patch.ParcelId);
                     tcs?.TrySetResult(false);
                     return false;
                 }
 
                 if (patch.PositionIndex != _positionIndex) {
+                    _owner.PublishFaulted(
+                        new InvalidOperationException($"PatchPositionMismatch:ActorPositionIndex={_positionIndex}, PatchPositionIndex={patch.PositionIndex}, ParcelId={patch.ParcelId}"),
+                        "PatchUpdate rejected: patch.PositionIndex mismatch",
+                        _positionIndex,
+                        patch.ParcelId);
                     tcs?.TrySetResult(false);
                     return false;
                 }
 
                 if (!_index.TryGetValue(patch.ParcelId, out var node)) {
+                    _owner.PublishFaulted(
+                        new KeyNotFoundException($"PatchNotFound:PositionIndex={_positionIndex}, ParcelId={patch.ParcelId}, QueueCount={_queue.Count}"),
+                        "PatchUpdate rejected: task not found (likely CreateTask not processed yet or already dequeued)",
+                        _positionIndex,
+                        patch.ParcelId);
                     tcs?.TrySetResult(false);
                     return false;
                 }
@@ -562,6 +577,11 @@ namespace WheelDiverterSorter.Execution {
                 var oldTask = node.Value.Task;
 
                 if (oldTask.PositionIndex != patch.PositionIndex) {
+                    _owner.PublishFaulted(
+                        new InvalidOperationException($"PatchTaskPositionMismatch:TaskPositionIndex={oldTask.PositionIndex}, PatchPositionIndex={patch.PositionIndex}, ParcelId={patch.ParcelId}"),
+                        "PatchUpdate rejected: existing task.PositionIndex mismatch",
+                        _positionIndex,
+                        patch.ParcelId);
                     tcs?.TrySetResult(false);
                     return false;
                 }
@@ -587,11 +607,21 @@ namespace WheelDiverterSorter.Execution {
                 merged = merged with { IsInvalidated = oldTask.IsInvalidated };
 
                 if (merged.EarliestDequeueAt > merged.LatestDequeueAt) {
+                    _owner.PublishFaulted(
+                        new InvalidOperationException($"PatchInvalidWindow:Earliest>{nameof(merged.LatestDequeueAt)} PositionIndex={_positionIndex}, ParcelId={patch.ParcelId}, Earliest={merged.EarliestDequeueAt:o}, Latest={merged.LatestDequeueAt:o}"),
+                        "PatchUpdate rejected: EarliestDequeueAt > LatestDequeueAt",
+                        _positionIndex,
+                        patch.ParcelId);
                     tcs?.TrySetResult(false);
                     return false;
                 }
 
                 if (merged.LostDecisionAt is not null && merged.LatestDequeueAt > merged.LostDecisionAt.Value) {
+                    _owner.PublishFaulted(
+                        new InvalidOperationException($"PatchInvalidLostDecisionAt:Latest>{nameof(merged.LostDecisionAt)} PositionIndex={_positionIndex}, ParcelId={patch.ParcelId}, Latest={merged.LatestDequeueAt:o}, LostDecisionAt={merged.LostDecisionAt:o}"),
+                        "PatchUpdate rejected: LatestDequeueAt > LostDecisionAt",
+                        _positionIndex,
+                        patch.ParcelId);
                     tcs?.TrySetResult(false);
                     return false;
                 }

@@ -9,6 +9,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
 	</ItemGroup>
 	<ItemGroup>
 		<!-- 说明：复制 Leadshine 依赖 DLL 到编译输出目录 -->
@@ -23,6 +24,15 @@
 		<ProjectReference Include="..\WheelDiverterSorter.Execution\WheelDiverterSorter.Execution.csproj" />
 		<ProjectReference Include="..\WheelDiverterSorter.Infrastructure\WheelDiverterSorter.Infrastructure.csproj" />
 		<ProjectReference Include="..\WheelDiverterSorter.Ingress\WheelDiverterSorter.Ingress.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Update="install.bat">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="uninstall.bat">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
 	</ItemGroup>
 
 

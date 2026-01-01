@@ -105,9 +105,9 @@ internal class Program {
 
             builder.Services.AddHostedService<PositionQueueHostedService>();
 
-            /*#if !DEBUG
+#if !DEBUG
                 builder.Services.AddWindowsService();
-            #endif*/
+#endif
             //
             var host = builder.Build();
             // 添加全局异常处理器以防止崩溃

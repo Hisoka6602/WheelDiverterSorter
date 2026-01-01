@@ -79,6 +79,9 @@ namespace WheelDiverterSorter.Host.Servers {
         protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
             BuildLookupCaches();
 
+            // 订阅 PositionQueueManager 故障事件：用于定位 UpdateTaskAsync/CreateTaskAsync 等返回 false 的真实原因
+            _positionQueueManager.Faulted += OnPositionQueueFaulted;
+
             foreach (var pos in _positionOptions.Value.OrderBy(o => o.PositionIndex)) {
                 var ok = await _positionQueueManager.CreatePositionAsync(pos.PositionIndex, stoppingToken).ConfigureAwait(false);
                 if (ok) {
@@ -103,6 +106,7 @@ namespace WheelDiverterSorter.Host.Servers {
             }
             finally {
                 _sensorManager.SensorStateChanged -= OnSensorStateChanged;
+                _positionQueueManager.Faulted -= OnPositionQueueFaulted;
                 _logger.LogInformation(new EventId(1003, "Unsubscribed"), "已解除订阅传感器状态变更事件");
 
                 foreach (var actor in _actors.Values) {
@@ -170,7 +174,20 @@ namespace WheelDiverterSorter.Host.Servers {
         private static string FormatTimestamp(DateTimeOffset value) => value.ToLocalTime().ToString(TimestampFormat);
 
         private static string FormatTimestampMs(long unixMs)
-            => DateTimeOffset.FromUnixTimeMilliseconds(unixMs).ToLocalTime().ToString(TimestampFormat);
+             => DateTimeOffset.FromUnixTimeMilliseconds(unixMs).ToLocalTime().ToString(TimestampFormat);
+
+        private void OnPositionQueueFaulted(object? sender, PositionQueueManagerFaultedEventArgs e) {
+            try {
+                _logger.LogError(e.Exception,
+                    "PositionQueueManager Faulted: Context={Context}, PositionIndex={PositionIndex}, ParcelId={ParcelId}, OccurredAt={OccurredAt:o}",
+                    e.Context ?? string.Empty,
+                    e.PositionIndex,
+                    e.ParcelId,
+                    e.OccurredAt);
+            }
+            catch {
+            }
+        }
 
         private void OnSensorStateChanged(object? sender, SensorStateChangedEventArgs args) {
             if (args.SensorType != IoPointType.DiverterPositionSensor) {
@@ -308,6 +325,12 @@ namespace WheelDiverterSorter.Host.Servers {
                         _logger.LogWarning(new EventId(3002, "EarlyTriggered"),
                             "包裹提前触发：TraceId={TraceId}, PositionIndex={PositionIndex}, ParcelId={ParcelId}, OccurredAt={OccurredAt}, Earliest={Earliest}, DeltaMs={DeltaMs}",
                             traceId, pos.PositionIndex, head.ParcelId, occurredAtText, FormatTimestamp(earliestLocal), earliestMs - occurredMs);
+                        //直走
+                        _diverterById.TryGetValue((int)pos.DiverterId, out var diverter);
+                        if (diverter is not null) {
+                            await diverter.StraightThroughAsync().ConfigureAwait(continueOnCapturedContext: false);
+                        }
+
                         return;
                     }
                     if (occurredAt > latestLocal) {
@@ -470,7 +493,7 @@ namespace WheelDiverterSorter.Host.Servers {
                 _logger.LogDebug(new EventId(9200, "NextWindow.NoNext"),
                     "NextWindow 无下一站：TraceId={TraceId}, Current={CurrentPositionIndex}, ParcelId={ParcelId}",
                     traceId, currentPositionIndex, parcelId);
-                return false;
+                return true; // 终点站：无需更新窗口，不视为失败
             }
 
             if (!_positionByIndex.TryGetValue(nextPositionIndex, out var nextPosOpt)) {
@@ -498,30 +521,30 @@ namespace WheelDiverterSorter.Host.Servers {
             var earliest = currentOccurredAt.AddMilliseconds(transitMs - seg.TimeToleranceMs);
             var latest = currentOccurredAt.AddMilliseconds(transitMs + seg.TimeToleranceMs);
 
-            // 额外诊断：next 队列信息
-            var nextSnapshot = _positionQueueManager.GetTasksSnapshot(nextPositionIndex);
-            var nextTop5 = nextSnapshot.Take(5).Select(t => t.ParcelId).ToArray();
-            var nextTop5Text = nextTop5.Length == 0 ? "[]" : $"[{string.Join(',', nextTop5)}]";
+            // 重要：PositionQueueManager 对任务的有效性约束：LatestDequeueAt 必须 <= LostDecisionAt（若 LostDecisionAt 非空）。
+            // 由于编排创建任务时会为“前一个任务”回写 LostDecisionAt=next.EarliestDequeueAt，
+            // 若此处把 next 的窗口整体后移，可能出现 next.Latest > next.LostDecisionAt，从而 patch 被拒绝。
+            // 解决：在重算 next 窗口时，同步把 next 的 LostDecisionAt 调整为 >= latest（最小取 latest 本身）。
+            var updateMask = PositionQueueTaskUpdateMask.EarliestDequeueAt
+                             | PositionQueueTaskUpdateMask.LatestDequeueAt
+                             | PositionQueueTaskUpdateMask.LostDecisionAt;
 
-            var ok = await _positionQueueManager.UpdateTaskAsync(new PositionQueueTaskPatch {
+            var patch = new PositionQueueTaskPatch {
                 PositionIndex = nextPositionIndex,
                 ParcelId = parcelId,
-                UpdateMask = (PositionQueueTaskUpdateMask.EarliestDequeueAt | PositionQueueTaskUpdateMask.LatestDequeueAt),
+                UpdateMask = updateMask,
                 EarliestDequeueAt = earliest,
-                LatestDequeueAt = latest
-            }, "Arrived-UpdateNextWindow").ConfigureAwait(false);
+                LatestDequeueAt = latest,
+                LostDecisionAt = latest
+            };
+
+            var ok = await _positionQueueManager.UpdateTaskAsync(patch, "Arrived-UpdateNextWindow").ConfigureAwait(false);
 
             if (!ok) {
-                var nextHeadId = _positionQueueManager.TryPeekFirstTask(nextPositionIndex, out var headAny) ? headAny.ParcelId : -1;
-                _logger.LogError(new EventId(9204, "NextWindow.UpdateTaskFailed"),
-                    "NextWindow UpdateTaskAsync 失败：TraceId={TraceId}, Current={CurrentPositionIndex}, Next={NextPositionIndex}, ParcelId={ParcelId}, NextQueueCount={NextQueueCount}, NextHeadParcelId={NextHeadParcelId}, NextTop5={NextTop5}, Earliest={Earliest}, Latest={Latest}",
-                    traceId, currentPositionIndex, nextPositionIndex, parcelId, nextSnapshot.Count, nextHeadId, nextTop5Text, FormatTimestamp(earliest), FormatTimestamp(latest));
                 return false;
             }
 
-            _logger.LogDebug(new EventId(9205, "NextWindow.Updated"),
-                "NextWindow 已更新：TraceId={TraceId}, Current={CurrentPositionIndex}, Next={NextPositionIndex}, ParcelId={ParcelId}, TransitMs={TransitMs}, Earliest={Earliest}, Latest={Latest}",
-                traceId, currentPositionIndex, nextPositionIndex, parcelId, transitMs, FormatTimestamp(earliest), FormatTimestamp(latest));
+            _logger.LogDebug($"NextWindow 已更新: TraceId={traceId}, Current={currentPositionIndex}, Next={nextPositionIndex}, ParcelId={parcelId}, TransitMs={transitMs}, Earliest={FormatTimestamp(earliest)}, Latest={FormatTimestamp(latest)}");
             return true;
         }
 
