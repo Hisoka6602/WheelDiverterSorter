@@ -5,17 +5,19 @@ using System.Text;
 using System.Buffers;
 using System.Text.Json;
 using TouchSocket.Core;
+using System.Net.Sockets;
 using TouchSocket.Sockets;
 using System.Threading.Tasks;
 using WheelDiverterSorter.Core;
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using System.Net.NetworkInformation;
 using WheelDiverterSorter.Core.Enums;
 using WheelDiverterSorter.Core.Events;
 using WheelDiverterSorter.Core.Models;
 using WheelDiverterSorter.Core.Options;
-using System.Runtime.InteropServices.JavaScript;
+using TcpClient = TouchSocket.Sockets.TcpClient;
 
 namespace WheelDiverterSorter.Ingress {
 
@@ -32,6 +34,9 @@ namespace WheelDiverterSorter.Ingress {
         private object? _activeSession;
 
         private int _isConnected; // 0=false, 1=true
+
+        // Track server sessions count to avoid marking the whole server as disconnected when just a client drops.
+        private int _serverSessionCount;
 
         private CancellationTokenSource? _lifetimeCts;
         private Task? _clientReconnectLoopTask;
@@ -68,7 +73,9 @@ namespace WheelDiverterSorter.Ingress {
             UpstreamRoutingConnectionOptions connectionOptions,
             CancellationToken cancellationToken = default) {
             ConnectionOptions = connectionOptions;
-
+            if (IsConnected) {
+                return true;
+            }
             // 统一生命周期取消源：DisconnectAsync / Dispose 可以主动取消后台循环
             _lifetimeCts?.Cancel();
             _lifetimeCts?.Dispose();
@@ -123,36 +130,11 @@ namespace WheelDiverterSorter.Ingress {
             RaiseDisconnected(msg);
         }
 
-        public ValueTask<bool> SendCreateParcelAsync(UpstreamCreateParcelRequest request, CancellationToken cancellationToken = default)
-            => SendTypedJsonLineAsync("ParcelDetected", request, cancellationToken);
-
-        public ValueTask<bool> SendDropToChuteAsync(SortingCompletedMessage request, CancellationToken cancellationToken = default)
-            => SendTypedJsonLineAsync("SortingCompleted", request, cancellationToken);
-
-        // 该 Type 字符串必须与上游 switch 完全一致；若上游未实现该 case，则需要改为其实际约定值
-        public ValueTask<bool> SendParcelExceptionAsync(ParcelExceptionMessage request, CancellationToken cancellationToken = default)
-            => SendTypedJsonLineAsync("ParcelException", request, cancellationToken);
-
-        private async Task<bool> ConnectAsClientAsync(CancellationToken cancellationToken) {
-            // 客户端模式：参考 DefaultDws 的思路，后台循环负责断线重连
-            if (_clientReconnectLoopTask is not null && !_clientReconnectLoopTask.IsCompleted) {
-                return IsConnected;
-            }
-
-            // 首次先尝试连接一次，返回给调用方明确结果；之后再进入断线重连循环
-            var firstOk = await StartClientOnceAsync(cancellationToken).ConfigureAwait(false);
-
-            if (ConnectionOptions?.IsAutoReconnectEnabled == true) {
-                _clientReconnectLoopTask = RunClientReconnectLoopAsync(cancellationToken);
-            }
-
-            return firstOk;
-        }
-
         private async Task SafeDisposeAsync() {
             try {
                 Interlocked.Exchange(ref _isConnected, 0);
                 Status = UpstreamRoutingStatus.Disconnected;
+                Interlocked.Exchange(ref _serverSessionCount, 0);
 
                 var client = Interlocked.Exchange(ref _client, null);
                 if (client is not null) {
@@ -196,10 +178,15 @@ namespace WheelDiverterSorter.Ingress {
             }
 
             var service = new TcpService();
+            var listenIp = ResolveServerListenIp(options.Endpoint);
+            if (!string.Equals(listenIp, options.Endpoint, StringComparison.OrdinalIgnoreCase)) {
+                _logger.LogWarning(
+                    "[Upstream] Server listen endpoint 无法在本机绑定，已降级为监听全部网卡：Original={Original}, Listen={Listen}, Port={Port}",
+                    options.Endpoint, listenIp, options.Port);
+            }
 
             var config = new TouchSocketConfig()
-                .SetListenIPHosts([new IPHost($"{options.Endpoint}:{options.Port}")])
-                // 参照 DefaultDws 的 TryGetMessage：如果需要稳定分包，建议启用终止符适配器
+                .SetListenIPHosts([new IPHost($"{listenIp}:{options.Port}")])
                 .SetTcpDataHandlingAdapter(() => new TerminatorPackageAdapter("\n"))
                 .ConfigureContainer(a => { })
                 .ConfigurePlugins(_ => { });
@@ -213,13 +200,31 @@ namespace WheelDiverterSorter.Ingress {
 
             _server = service;
 
+            // Server "connected" should mean: listening successfully.
             Status = UpstreamRoutingStatus.Connected;
-            Interlocked.Exchange(ref _isConnected, 1);
+            // Only mark IsConnected when there is an active client session.
+            Interlocked.Exchange(ref _isConnected, 0);
 
             RaiseConnected($"[Upstream] Server started at {options.Endpoint}:{options.Port}");
             _logger.LogInformation("[Upstream] Server started at {Endpoint}:{Port}", options.Endpoint, options.Port);
 
             return true;
+        }
+
+        private async Task<bool> ConnectAsClientAsync(CancellationToken cancellationToken) {
+            // 客户端模式：参考 DefaultDws 的思路，后台循环负责断线重连
+            if (_clientReconnectLoopTask is not null && !_clientReconnectLoopTask.IsCompleted) {
+                return IsConnected;
+            }
+
+            // 首次先尝试连接一次，返回给调用方明确结果；之后再进入断线重连循环
+            var firstOk = await StartClientOnceAsync(cancellationToken).ConfigureAwait(false);
+
+            if (ConnectionOptions?.IsAutoReconnectEnabled == true) {
+                _clientReconnectLoopTask = RunClientReconnectLoopAsync(cancellationToken);
+            }
+
+            return firstOk;
         }
 
         private async Task RunClientReconnectLoopAsync(CancellationToken cancellationToken) {
@@ -375,7 +380,11 @@ namespace WheelDiverterSorter.Ingress {
             _clients[id] = client;
             _activeSession = client;
 
+            var count = Interlocked.Increment(ref _serverSessionCount);
+            Interlocked.Exchange(ref _isConnected, 1);
+
             _logger.LogInformation("[Upstream][SERVER] Client connected: {ClientId}, total={Count}", id, _clients.Count);
+            _logger.LogInformation("[Upstream][SERVER] Active sessions={SessionCount}", count);
             return Task.CompletedTask;
         }
 
@@ -389,7 +398,14 @@ namespace WheelDiverterSorter.Ingress {
                 _activeSession = null;
             }
 
-            _logger.LogWarning("[Upstream][SERVER] Client disconnected: {ClientId}, total={Count}", id ?? "unknown", _clients.Count);
+            var count = Interlocked.Decrement(ref _serverSessionCount);
+            if (count <= 0) {
+                Interlocked.Exchange(ref _serverSessionCount, 0);
+                Interlocked.Exchange(ref _isConnected, 0);
+            }
+
+            _logger.LogWarning("[Upstream][SERVER] Client disconnected: {ClientId}, total={Count}, eventReason={Reason}", id ?? "unknown", _clients.Count, e.Message);
+            _logger.LogInformation("[Upstream][SERVER] Active sessions={SessionCount}", Volatile.Read(ref _serverSessionCount));
             return Task.CompletedTask;
         }
 
@@ -546,6 +562,60 @@ namespace WheelDiverterSorter.Ingress {
             catch {
                 return null;
             }
+        }
+
+        public ValueTask<bool> SendCreateParcelAsync(UpstreamCreateParcelRequest request, CancellationToken cancellationToken = default)
+            => SendTypedJsonLineAsync("ParcelDetected", request, cancellationToken);
+
+        public ValueTask<bool> SendDropToChuteAsync(SortingCompletedMessage request, CancellationToken cancellationToken = default)
+            => SendTypedJsonLineAsync("SortingCompleted", request, cancellationToken);
+
+        // 该 Type 字符串必须与上游 switch 完全一致；若上游未实现该 case，则需要改为其实际约定值
+        public ValueTask<bool> SendParcelExceptionAsync(ParcelExceptionMessage request, CancellationToken cancellationToken = default)
+            => SendTypedJsonLineAsync("ParcelException", request, cancellationToken);
+
+        private static string ResolveServerListenIp(string? endpoint) {
+            // 空值或非法 IP：默认监听全部网卡
+            if (string.IsNullOrWhiteSpace(endpoint)) {
+                return IPAddress.Any.ToString();
+            }
+
+            if (!IPAddress.TryParse(endpoint, out var ip)) {
+                return IPAddress.Any.ToString();
+            }
+
+            // 明确允许 Any/IPv6Any
+            if (ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any)) {
+                return ip.ToString();
+            }
+
+            // endpoint 是本机网卡地址才允许绑定；否则降级为 Any
+            return IsBindableLocalIp(ip) ? ip.ToString() : IPAddress.Any.ToString();
+        }
+
+        private static bool IsBindableLocalIp(IPAddress ip) {
+            try {
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces()) {
+                    if (ni.OperationalStatus != OperationalStatus.Up) {
+                        continue;
+                    }
+
+                    var props = ni.GetIPProperties();
+                    foreach (var ua in props.UnicastAddresses) {
+                        var addr = ua.Address;
+                        if (addr.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6) {
+                            if (addr.Equals(ip)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch {
+                // 发生异常时按不可绑定处理，避免绑定错误地址导致启动失败
+            }
+
+            return false;
         }
     }
 }

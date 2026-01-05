@@ -1,17 +1,22 @@
 ﻿using System;
+using System.Net;
 using System.Linq;
 using System.Text;
 using TouchSocket.Core;
+using System.Net.Sockets;
 using TouchSocket.Sockets;
 using System.Threading.Tasks;
 using WheelDiverterSorter.Core;
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
+using System.Net.NetworkInformation;
 using WheelDiverterSorter.Core.Enums;
 using WheelDiverterSorter.Core.Events;
 using WheelDiverterSorter.Core.Options;
+using TcpClient = TouchSocket.Sockets.TcpClient;
 
 namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
+
     public class ShuDiNiaoWheelDiverter : IWheelDiverter {
         private readonly ILogger<ShuDiNiaoWheelDiverter> _logger;
 
@@ -20,6 +25,9 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
         private TcpClient? _tcpClient;
         private TcpService? _tcpService;
         private volatile string? _activeSessionId;
+        private int _serverSessionCount;
+        private int _isListening;
+
         private int _isDisposed;
         private CancellationTokenSource? _autoReconnectCts;
         private Task? _autoReconnectTask;
@@ -62,6 +70,8 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
 
                 // 重要：门闩持有期间只能调用不重入的断开实现，避免自锁死
                 await DisconnectCoreAsync("重新建立连接", cancellationToken, true).ConfigureAwait(false);
+
+                Status = WheelDiverterStatus.Connecting;
 
                 return connectionOptions.Mode switch {
                     TcpConnectionMode.Client => await ConnectAsClientAsync(connectionOptions, cancellationToken).ConfigureAwait(false),
@@ -190,8 +200,8 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
             var lastCommandSent = ShuDiNiaoProtocol.FormatBytes(frame);
             _logger.LogInformation(
                 "[摆轮通信-发送] 摆轮 {DiverterId} 发送速度设置 | 节点:{DeviceAddress:X2} | 速度={Speed}m/min | 摆动后速度={SpeedAfterSwing}m/min | 速度帧={Frame}",
-                ConnectionOptions.Endpoint,
                 DiverterId,
+                0x51,
                 speedMPerMin,
                 speedAfterSwingMPerMin,
                 lastCommandSent);
@@ -264,6 +274,8 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
                 Connected = (c, e) => {
                     // 服务端避免持有 SessionClient 引用，仅记录 Id
                     _activeSessionId = c.Id;
+                    Interlocked.Increment(ref _serverSessionCount);
+                    Status = WheelDiverterStatus.Connected;
                     OnConnected(TcpConnectionMode.Server, c.IP);
                     return EasyTask.CompletedTask;
                 },
@@ -272,7 +284,21 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
                         _activeSessionId = null;
                     }
 
-                    OnDisconnected("连接已断开");
+                    var left = Interlocked.Decrement(ref _serverSessionCount);
+                    if (left <= 0) {
+                        Interlocked.Exchange(ref _serverSessionCount, 0);
+
+                        // Server is still listening; only mark disconnected if we're not listening.
+                        if (Volatile.Read(ref _isListening) == 0) {
+                            Status = WheelDiverterStatus.Disconnected;
+                            OnDisconnected($"连接已断开: {e.Message}");
+                        }
+                        else {
+                            // 仅会话断开：不视为服务整体断开
+                            _logger.LogWarning("[摆轮][SERVER] Client session closed. DiverterId={DiverterId}, Reason={Reason}", DiverterId, e.Message);
+                        }
+                    }
+
                     return EasyTask.CompletedTask;
                 },
                 Received = (c, e) => {
@@ -298,12 +324,18 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
                 }
 
                 await service.StartAsync().WaitAsync(cts.Token).ConfigureAwait(false);
+                Volatile.Write(ref _isListening, 1);
+                // Listening success: treat as connected in Status, even if no session yet.
+                Status = WheelDiverterStatus.Connected;
+                _logger.LogInformation("[摆轮][SERVER] Listening started. DiverterId={DiverterId}, Listen={ListenHost}", DiverterId, listenHost);
                 return true;
             }
             catch (Exception ex) {
                 OnFaulted(ex, $"StartAsServerAsync listen={listenHost}");
                 service.SafeDispose();
                 _tcpService = null;
+                Volatile.Write(ref _isListening, 0);
+                Status = WheelDiverterStatus.Disconnected;
                 return false;
             }
         }
@@ -520,6 +552,8 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
             }
 
             _activeSessionId = null;
+            Interlocked.Exchange(ref _serverSessionCount, 0);
+            Volatile.Write(ref _isListening, 0);
 
             if (_tcpClient is not null) {
                 try {
@@ -547,7 +581,52 @@ namespace WheelDiverterSorter.Drivers.Vendors.ShuDiNiao {
                 }
             }
 
+            Status = WheelDiverterStatus.Disconnected;
             OnDisconnected(reason);
+        }
+
+        private static string ResolveServerListenIp(string? endpoint) {
+            // 空值或非法 IP：默认监听全部网卡
+            if (string.IsNullOrWhiteSpace(endpoint)) {
+                return IPAddress.Any.ToString();
+            }
+
+            if (!IPAddress.TryParse(endpoint, out var ip)) {
+                return IPAddress.Any.ToString();
+            }
+
+            // 明确允许 Any/IPv6Any
+            if (ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any)) {
+                return ip.ToString();
+            }
+
+            // endpoint 是本机网卡地址才允许绑定；否则降级为 Any
+            return IsBindableLocalIp(ip) ? ip.ToString() : IPAddress.Any.ToString();
+        }
+
+        private static bool IsBindableLocalIp(IPAddress ip) {
+            try {
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces()) {
+                    if (ni.OperationalStatus != OperationalStatus.Up) {
+                        continue;
+                    }
+
+                    var props = ni.GetIPProperties();
+                    foreach (var ua in props.UnicastAddresses) {
+                        var addr = ua.Address;
+                        if (addr.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6) {
+                            if (addr.Equals(ip)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch {
+                // 发生异常时按不可绑定处理，避免绑定错误地址导致启动失败
+            }
+
+            return false;
         }
     }
 }

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using WheelDiverterSorter.Core.Enums;
 using WheelDiverterSorter.Core.Manager;
 using WheelDiverterSorter.Core.Options;
+using WheelDiverterSorter.Core.Utilities;
 
 namespace WheelDiverterSorter.Host.Servers {
 
@@ -42,6 +43,7 @@ namespace WheelDiverterSorter.Host.Servers {
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
+            await EnvironmentHelper.DelayAfterBootAsync(TimeSpan.FromSeconds(20), stoppingToken).ConfigureAwait(false);
             await _wheelDiverterManager.ConnectAllAsync(stoppingToken);
             await _wheelDiverterManager.StopAllAsync(stoppingToken);
         }
