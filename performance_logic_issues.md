@@ -1,7 +1,13 @@
 ## 性能与逻辑隐患梳理
 
+**Summary (EN)**:  
+- Duplicate parcel IDs when sensor triggers within the same millisecond drop creations because `ParcelId` uses a millisecond timestamp.  
+- `_parcelGates` in sorting orchestration never removes per-parcel semaphores, causing unbounded growth.  
+- `EnqueueBoolAsync` still executes queued commands after cancellation, so cancelled callers still trigger side effects.  
+- Unbounded channels for sensor events can grow without backpressure during sensor chatter.
+
 - **重复包裹编号导致创建失败（逻辑隐患）**  
-  位置：`WheelDiverterSorter.Host/Servers/ParcelHostedService.cs` 第35-43行。包裹创建使用 `DateTimeOffset.Now.ToUnixTimeMilliseconds()` 作为 `ParcelId`，在传感器高频触发时，同一毫秒内的多次创建会生成相同 ID。`ParcelManager` 以 `ConcurrentDictionary` 去重，重复 ID 会被拒绝，直接丢弃包裹创建事件，造成漏分拣风险。
+  位置：`WheelDiverterSorter.Host/Servers/ParcelHostedService.cs` 第35-43行。包裹创建使用 `DateTimeOffset.Now.ToUnixTimeMilliseconds()` 作为 `ParcelId`，在传感器高频触发时，同一毫秒内的多次创建会生成相同 ID（竞态）。`ParcelManager` 以 `ConcurrentDictionary` 去重，重复 ID 会被拒绝，直接丢弃包裹创建事件，造成漏分拣风险；需要改用全局递增/Guid 等单调唯一值。
 
 - **静态并发字典未清理，长期运行易内存膨胀（性能隐患）**  
   位置：`WheelDiverterSorter.Host/Servers/SortingOrchestrationHostedService.cs` 第32行 `_parcelGates`。为每个 `ParcelId` 创建的 `SemaphoreSlim` 从未移除，包裹生命周期结束后仍常驻，长时间高吞吐运行会让该静态字典无限增长，造成内存占用和字典操作性能下降。
