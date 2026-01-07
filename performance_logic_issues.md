@@ -1,9 +1,9 @@
 ## 性能与逻辑隐患梳理
 
-**Summary (EN)**:  
-- Duplicate parcel IDs when sensor triggers within the same millisecond cause dropped creations because `ParcelId` uses a millisecond timestamp.  
-- `_parcelGates` in sorting orchestration never removes per-parcel semaphores, causing unbounded growth.  
-- `EnqueueBoolAsync` still executes queued commands after cancellation, so canceled callers still trigger side effects.  
+**Summary (EN)**:
+- Duplicate parcel IDs when sensor triggers within the same millisecond cause dropped creations because `ParcelId` uses a millisecond timestamp.
+- `_parcelGates` in sorting orchestration never removes per-parcel semaphores, causing unbounded growth.
+- `EnqueueBoolAsync` still executes queued commands after cancellation, so canceled callers still trigger side effects.
 - Unbounded channels for sensor events can grow without backpressure during sensor chatter.
 
 - **重复包裹编号导致创建失败（逻辑隐患，严重度：高）**
