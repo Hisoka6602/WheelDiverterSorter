@@ -15,6 +15,10 @@ namespace WheelDiverterSorter.Core.Options {
         /// </summary>
         public int DiverterId { get; init; }
         /// <summary>
+        /// 速度（毫米/秒）
+        /// </summary>
+        public int SpeedMmps { get; init; }
+        /// <summary>
         /// 主机地址（TCP/串口名等）
         /// </summary>
         public required string Endpoint { get; init; } = string.Empty;

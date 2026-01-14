@@ -13,12 +13,12 @@ namespace WheelDiverterSorter.Host.Servers {
 
     public class WheelDiverterHostedService : BackgroundService {
         private readonly ILogger<IoLinkageHostedService> _logger;
-        private readonly IOptions<IReadOnlyList<WheelDiverterConnectionOptions>> _wheelDiverterConnectionOptions;
+        private readonly IOptions<List<WheelDiverterConnectionOptions>> _wheelDiverterConnectionOptions;
         private readonly IWheelDiverterManager _wheelDiverterManager;
         private readonly ISystemStateManager _systemStateManager;
 
         public WheelDiverterHostedService(ILogger<IoLinkageHostedService> logger,
-            IOptions<IReadOnlyList<WheelDiverterConnectionOptions>> wheelDiverterConnectionOptions,
+            IOptions<List<WheelDiverterConnectionOptions>> wheelDiverterConnectionOptions,
             IWheelDiverterManager wheelDiverterManager,
             ISystemStateManager systemStateManager) {
             _logger = logger;
@@ -30,9 +30,9 @@ namespace WheelDiverterSorter.Host.Servers {
                 await Task.Yield();
                 if (args.NewState == SystemState.Running) {
                     await _wheelDiverterManager.StraightThroughAllAsync();
-                    await Task.Delay(100);
                     foreach (var wheelDiverter in _wheelDiverterManager.Diverters.OrderByDescending(o => o.DiverterId)) {
                         await wheelDiverter.RunAsync();
+
                         await Task.Delay(500);
                     }
                 }

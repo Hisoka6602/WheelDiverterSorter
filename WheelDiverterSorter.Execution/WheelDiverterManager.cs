@@ -29,7 +29,14 @@ namespace WheelDiverterSorter.Execution {
 
         public async ValueTask ConnectAllAsync(CancellationToken cancellationToken = default) {
             foreach (var wheelDiverter in Diverters) {
-                await wheelDiverter.ConnectAsync(wheelDiverter.ConnectionOptions, cancellationToken);
+                var connectAsync = await wheelDiverter.ConnectAsync(wheelDiverter.ConnectionOptions, cancellationToken);
+                if (connectAsync) {
+                    //设置速度
+                    if (wheelDiverter.ConnectionOptions.SpeedMmps > 0) {
+                        await wheelDiverter.SetSpeedMmpsAsync(wheelDiverter.ConnectionOptions.SpeedMmps, cancellationToken);
+                        await Task.Delay(20, cancellationToken);
+                    }
+                }
             }
         }
 
