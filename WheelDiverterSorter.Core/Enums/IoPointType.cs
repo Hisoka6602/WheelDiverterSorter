@@ -40,6 +40,24 @@ namespace WheelDiverterSorter.Core.Enums {
         /// 阻塞检测传感器
         /// </summary>
         [Description("阻塞检测传感器")]
-        BlockageDetectionSensor = 4
+        BlockageDetectionSensor = 4,
+
+        /// <summary>
+        /// 拉距暂停点 IO
+        /// </summary>
+        [Description("拉距暂停点IO")]
+        SpacingPausePoint = 5,
+
+        /// <summary>
+        /// 称重台入口 IO
+        /// </summary>
+        [Description("称重台入口IO")]
+        WeighingStationEntryPoint = 6,
+
+        /// <summary>
+        /// 称重台出口 IO
+        /// </summary>
+        [Description("称重台出口IO")]
+        WeighingStationExitPoint = 7
     }
 }

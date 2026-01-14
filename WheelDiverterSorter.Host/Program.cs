@@ -48,6 +48,12 @@ internal class Program {
                 builder.Configuration.GetSection("ConveyorSegmentOptions"));
             builder.Services.Configure<PreRunWarningOptions>(
                 builder.Configuration.GetSection("PreRunWarning"));
+            builder.Services
+                .AddOptions<SpacingPauseOptions>()
+                .Bind(builder.Configuration.GetSection("SpacingPause"))
+                .Validate(o => o.PauseSensorPoint > 0, "配置无效：SpacingPause:PauseSensorPoint 必须大于 0")
+                .ValidateOnStart();
+
             //组件注册
             builder.Services.AddSingleton<ISystemStateManager, SystemStateManager>();
             builder.Services.AddSingleton<SafeExecutor>();
@@ -104,6 +110,10 @@ internal class Program {
             //站点服务
 
             builder.Services.AddHostedService<PositionQueueHostedService>();
+
+            //拉距服务
+
+            builder.Services.AddHostedService<SpacingPauseHostedService>();
 
 #if !DEBUG
                 builder.Services.AddWindowsService();
